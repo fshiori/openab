@@ -28,6 +28,7 @@ Each agent lives under `agents.<name>`.
 | `slack.enabled` | Enable the Slack adapter for the agent. | `false` |
 | `slack.botToken` | Slack Bot User OAuth token. | `""` |
 | `slack.appToken` | Slack App-Level token for Socket Mode. | `""` |
+| `slack.existingSecret` | Name of a pre-existing K8s Secret containing `slack-bot-token` and `slack-app-token`. When set, `botToken`/`appToken` above are ignored and the chart skips creating those keys. Enables External Secrets Operator / Vault / SealedSecrets workflows. | `""` |
 | `slack.allowedChannels` | Slack channel allowlist. Empty means allow all channels by default. | `[]` |
 | `slack.allowedUsers` | Slack user allowlist. Empty means allow all users by default. | `[]` |
 | `nameOverride` | Override this agent's generated resource name. | `""` |
