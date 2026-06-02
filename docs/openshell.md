@@ -69,12 +69,21 @@ openshell provider create --name discord --type generic \
   --credential "DISCORD_BOT_TOKEN=your-token-here"
 ```
 
-### 2. Build and create sandbox
+### 2. Create sandbox
+
+Using the pre-built image:
 
 ```bash
-# From the repo root
-docker build -t oab-sandbox openshell/
+openshell sandbox create --name oab \
+  --from ghcr.io/openabdev/openab-native-sandbox:latest \
+  --provider discord \
+  -- bash
+```
 
+Or build locally from `openshell/Dockerfile`:
+
+```bash
+docker build -t oab-sandbox openshell/
 openshell sandbox create --name oab \
   --from oab-sandbox:latest \
   --provider discord \
