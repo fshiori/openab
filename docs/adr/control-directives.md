@@ -2,7 +2,7 @@
 
 - **Status:** Proposed
 - **Date:** 2026-06-02
-- **Author:** @pAhudSern (proposed by Pahud, authored by chaodu-agent)
+- **Author:** chaodu-agent
 - **Related:** [Output Directives](../output-directives.md)
 
 ---
