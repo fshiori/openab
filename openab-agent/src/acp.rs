@@ -35,6 +35,10 @@ pub struct AcpServer {
     // TODO(v0.2): add session TTL and periodic cleanup to prevent OOM
     sessions: HashMap<String, Agent>,
     working_dir: String,
+    /// Active model name (safe alternative to env mutation)
+    active_model: Option<String>,
+    /// Active provider name: "anthropic" or "openai" (safe alternative to env mutation)
+    active_provider: Option<String>,
 }
 
 impl AcpServer {
@@ -44,6 +48,8 @@ impl AcpServer {
             working_dir: std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| "/tmp".to_string()),
+            active_model: None,
+            active_provider: None,
         }
     }
 
@@ -129,8 +135,12 @@ impl AcpServer {
     fn handle_session_new(&mut self, id: u64) -> String {
         let session_id = Uuid::new_v4().to_string();
 
-        // Respect OPENAB_AGENT_PROVIDER if set, otherwise auto-detect
-        let provider_choice = std::env::var("OPENAB_AGENT_PROVIDER").unwrap_or_default();
+        // Use struct config if set, then env, then auto-detect
+        let provider_choice = self
+            .active_provider
+            .clone()
+            .or_else(|| std::env::var("OPENAB_AGENT_PROVIDER").ok())
+            .unwrap_or_default();
         let (provider, active_provider): (Box<dyn crate::llm::LlmProvider>, &str) =
             match provider_choice.as_str() {
                 "anthropic" => match AnthropicProvider::from_env() {
@@ -162,13 +172,17 @@ impl AcpServer {
         let agent = Agent::new_boxed(provider, self.working_dir.clone());
         self.sessions.insert(session_id.clone(), agent);
 
-        let model_name = std::env::var("OPENAB_AGENT_MODEL").unwrap_or_else(|_| {
-            if active_provider == "anthropic" {
-                "claude-sonnet-4-20250514".to_string()
-            } else {
-                "gpt-4.1-nano".to_string()
-            }
-        });
+        let model_name = self
+            .active_model
+            .clone()
+            .or_else(|| std::env::var("OPENAB_AGENT_MODEL").ok())
+            .unwrap_or_else(|| {
+                if active_provider == "anthropic" {
+                    "claude-sonnet-4-20250514".to_string()
+                } else {
+                    "gpt-4.1-nano".to_string()
+                }
+            });
 
         let resp = JsonRpcResponse {
             jsonrpc: "2.0",
@@ -264,24 +278,60 @@ impl AcpServer {
     }
 
     fn handle_set_config_option(&mut self, id: u64, params: &Value) -> String {
-        let config_id = params.get("configId").and_then(|v| v.as_str()).unwrap_or("");
+        let config_id = params
+            .get("configId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let value = params.get("value").and_then(|v| v.as_str()).unwrap_or("");
+        let session_id = params
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
 
         if config_id != "model" || value.is_empty() {
             return self.error_response(id, -32602, "unsupported configId or empty value");
         }
 
-        // Set the model env var so next session picks it up
-        // SAFETY: openab-agent is single-threaded for config changes
-        unsafe { std::env::set_var("OPENAB_AGENT_MODEL", value) };
+        // Validate model against available options
+        let models = Self::available_models();
+        let valid = models
+            .iter()
+            .any(|m| m.get("value").and_then(|v| v.as_str()) == Some(value));
+        if !valid {
+            return self.error_response(
+                id,
+                -32602,
+                &format!("unknown model: {value}. Use one from available_models."),
+            );
+        }
 
         // Determine provider from model name
-        let provider = if value.starts_with("claude") {
+        let provider_name = if value.starts_with("claude") {
             "anthropic"
         } else {
             "openai"
         };
-        unsafe { std::env::set_var("OPENAB_AGENT_PROVIDER", provider) };
+
+        // Store in struct (safe — no env mutation)
+        self.active_model = Some(value.to_string());
+        self.active_provider = Some(provider_name.to_string());
+
+        // Rebuild the current session's provider so the switch takes effect immediately
+        if !session_id.is_empty() {
+            if let Some(_agent) = self.sessions.remove(session_id) {
+                let new_provider: Result<Box<dyn crate::llm::LlmProvider>, String> =
+                    match provider_name {
+                        "anthropic" => AnthropicProvider::from_env().map(|p| Box::new(p) as _),
+                        _ => {
+                            crate::llm::OpenAiProvider::from_auth_store().map(|p| Box::new(p) as _)
+                        }
+                    };
+                if let Ok(p) = new_provider {
+                    let agent = Agent::new_boxed(p, self.working_dir.clone());
+                    self.sessions.insert(session_id.to_string(), agent);
+                }
+            }
+        }
 
         self.ok_response(
             id,
@@ -292,7 +342,7 @@ impl AcpServer {
                     "category": "model",
                     "type": "enum",
                     "currentValue": value,
-                    "options": Self::available_models()
+                    "options": models
                 }]
             }),
         )
