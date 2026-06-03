@@ -8,7 +8,27 @@ on:
       - 'Cargo.*'
 
 jobs:
+  build-binary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build openab binary (once)
+        run: |
+          DOCKER_BUILDKIT=1 docker build --target builder -t openab-builder -f Dockerfile .
+          CID=$(docker create openab-builder)
+          docker cp "$CID:/build/target/release/openab" openab
+          docker rm "$CID"
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: openab-binary
+          path: openab
+          retention-days: 1
+
   smoke-test:
+    needs: build-binary
     strategy:
       fail-fast: false
       matrix:
@@ -29,8 +49,25 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Build image
-        run: docker build -t openab-test${{ matrix.variant.suffix }} -f ${{ matrix.variant.dockerfile }} .
+      - name: Download pre-built binary
+        uses: actions/download-artifact@v4
+        with:
+          name: openab-binary
+          path: .pre-built
+
+      - name: Build image (skip Rust compilation)
+        run: |
+          chmod +x .pre-built/openab
+          DF="${{ matrix.variant.dockerfile }}"
+
+          # Replace builder stage with one that just copies the pre-built binary
+          if grep -q "FROM rust" "$DF"; then
+            sed '/^FROM rust/,/^FROM [^r]/{ /^FROM [^r]/!d; }' "$DF" > Dockerfile.ci
+            sed -i '1i FROM debian:bookworm-slim AS builder\nRUN mkdir -p /build/target/release\nCOPY .pre-built/openab /build/target/release/openab' Dockerfile.ci
+            docker build -t openab-test${{ matrix.variant.suffix }} -f Dockerfile.ci .
+          else
+            docker build -t openab-test${{ matrix.variant.suffix }} -f "$DF" .
+          fi
 
       - name: Verify openab CMD does not crash
         run: |
@@ -48,7 +85,6 @@ jobs:
         run: |
           INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","clientCapabilities":{},"clientInfo":{"name":"ci-test","version":"0.0.1"}}}'
 
-          # Start agent in background, send init, capture output with timeout
           CID=$(docker run -d -i --entrypoint sh openab-test${{ matrix.variant.suffix }} -c 'exec ${{ matrix.variant.agent }} ${{ matrix.variant.agent_args }} 2>/dev/null')
           echo "$INIT" | docker attach --no-stdin=false "$CID" &
           sleep 5
