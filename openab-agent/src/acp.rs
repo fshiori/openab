@@ -4,8 +4,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
+use std::time::Duration;
 use tokio::sync::mpsc;
 use uuid::Uuid;
+
+const MODEL_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Deserialize)]
 pub struct JsonRpcRequest {
@@ -31,6 +34,23 @@ pub struct JsonRpcNotification {
     pub params: Value,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ModelOption {
+    value: String,
+    name: String,
+    provider: String,
+}
+
+impl ModelOption {
+    fn new(value: &str, name: &str, provider: &str) -> Self {
+        Self {
+            value: value.to_string(),
+            name: name.to_string(),
+            provider: provider.to_string(),
+        }
+    }
+}
+
 pub struct AcpServer {
     // TODO(v0.2): add session TTL and periodic cleanup to prevent OOM
     sessions: HashMap<String, Agent>,
@@ -39,6 +59,8 @@ pub struct AcpServer {
     active_model: Option<String>,
     /// Active provider name: "anthropic" or "openai" (safe alternative to env mutation)
     active_provider: Option<String>,
+    /// Last model list exposed to the ACP client; used to validate model switches.
+    model_options: Vec<ModelOption>,
 }
 
 impl AcpServer {
@@ -50,6 +72,7 @@ impl AcpServer {
                 .unwrap_or_else(|_| "/tmp".to_string()),
             active_model: None,
             active_provider: None,
+            model_options: Vec::new(),
         }
     }
 
@@ -208,6 +231,7 @@ impl AcpServer {
                     "gpt-4.1-nano".to_string()
                 }
             });
+        self.model_options = Self::available_models().await;
 
         let resp = JsonRpcResponse {
             jsonrpc: "2.0",
@@ -220,7 +244,7 @@ impl AcpServer {
                     "category": "model",
                     "type": "enum",
                     "currentValue": model_name,
-                    "options": Self::available_models().await
+                    "options": self.model_options
                 }]
             })),
             error: None,
@@ -230,18 +254,14 @@ impl AcpServer {
 
     /// List available models based on configured credentials.
     /// Queries provider APIs when possible, falls back to known defaults.
-    async fn available_models() -> Vec<Value> {
+    async fn available_models() -> Vec<ModelOption> {
         let mut models = Vec::new();
 
         // Query Anthropic models if credentials are available
         if std::env::var("ANTHROPIC_API_KEY").is_ok() {
             match Self::fetch_anthropic_models().await {
                 Ok(fetched) => models.extend(fetched),
-                Err(_) => {
-                    // Fallback to known defaults if API unreachable
-                    models.push(json!({"value": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4", "provider": "anthropic"}));
-                    models.push(json!({"value": "claude-haiku-4-20250514", "name": "Claude Haiku 4", "provider": "anthropic"}));
-                }
+                Err(_) => models.extend(Self::fallback_anthropic_models()),
             }
         }
 
@@ -249,25 +269,27 @@ impl AcpServer {
         if crate::auth::load_tokens().is_ok() {
             match Self::fetch_openai_models().await {
                 Ok(fetched) => models.extend(fetched),
-                Err(_) => {
-                    // Fallback to known defaults if API unreachable
-                    models.push(json!({"value": "gpt-4.1-nano", "name": "GPT-4.1 Nano", "provider": "openai"}));
-                    models.push(json!({"value": "gpt-4.1-mini", "name": "GPT-4.1 Mini", "provider": "openai"}));
-                    models.push(json!({"value": "o4-mini", "name": "o4-mini", "provider": "openai"}));
-                }
+                Err(_) => models.extend(Self::fallback_openai_models()),
             }
         }
 
         if models.is_empty() {
-            models.push(json!({"value": "none", "name": "No credentials configured", "provider": "none"}));
+            models.push(ModelOption::new(
+                "none",
+                "No credentials configured",
+                "none",
+            ));
         }
         models
     }
 
     /// Fetch models from Anthropic /v1/models API.
-    async fn fetch_anthropic_models() -> Result<Vec<Value>, String> {
+    async fn fetch_anthropic_models() -> Result<Vec<ModelOption>, String> {
         let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|e| e.to_string())?;
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(MODEL_DISCOVERY_TIMEOUT)
+            .build()
+            .map_err(|e| e.to_string())?;
         let resp = client
             .get("https://api.anthropic.com/v1/models")
             .header("x-api-key", &api_key)
@@ -287,11 +309,8 @@ impl AcpServer {
                 if let Some(id) = m.get("id").and_then(|v| v.as_str()) {
                     // Only include chat models (claude-*)
                     if id.starts_with("claude") {
-                        let display = m
-                            .get("display_name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or(id);
-                        models.push(json!({"value": id, "name": display, "provider": "anthropic"}));
+                        let display = m.get("display_name").and_then(|v| v.as_str()).unwrap_or(id);
+                        models.push(ModelOption::new(id, display, "anthropic"));
                     }
                 }
             }
@@ -303,11 +322,14 @@ impl AcpServer {
     }
 
     /// Fetch models from OpenAI-compatible /models endpoint.
-    async fn fetch_openai_models() -> Result<Vec<Value>, String> {
+    async fn fetch_openai_models() -> Result<Vec<ModelOption>, String> {
         let tokens = crate::auth::load_tokens().map_err(|e| e.to_string())?;
         let base_url = std::env::var("OPENAB_AGENT_OPENAI_BASE_URL")
             .unwrap_or_else(|_| "https://chatgpt.com/backend-api".to_string());
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(MODEL_DISCOVERY_TIMEOUT)
+            .build()
+            .map_err(|e| e.to_string())?;
         let resp = client
             .get(format!("{}/models", base_url))
             .bearer_auth(&tokens.access_token)
@@ -334,7 +356,7 @@ impl AcpServer {
                         .or_else(|| m.get("id"))
                         .and_then(|v| v.as_str())
                         .unwrap_or(id);
-                    models.push(json!({"value": id, "name": name, "provider": "openai"}));
+                    models.push(ModelOption::new(id, name, "openai"));
                 }
             }
         }
@@ -344,23 +366,37 @@ impl AcpServer {
         Ok(models)
     }
 
-    /// Sync version for use in non-async contexts (e.g. set_config_option validation).
-    /// Uses credential detection with known defaults — the async version queries APIs.
-    fn available_models_sync() -> Vec<Value> {
+    fn fallback_available_models() -> Vec<ModelOption> {
         let mut models = Vec::new();
         if std::env::var("ANTHROPIC_API_KEY").is_ok() {
-            models.push(json!({"value": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4", "provider": "anthropic"}));
-            models.push(json!({"value": "claude-haiku-4-20250514", "name": "Claude Haiku 4", "provider": "anthropic"}));
+            models.extend(Self::fallback_anthropic_models());
         }
         if crate::auth::load_tokens().is_ok() {
-            models.push(json!({"value": "gpt-4.1-nano", "name": "GPT-4.1 Nano", "provider": "openai"}));
-            models.push(json!({"value": "gpt-4.1-mini", "name": "GPT-4.1 Mini", "provider": "openai"}));
-            models.push(json!({"value": "o4-mini", "name": "o4-mini", "provider": "openai"}));
+            models.extend(Self::fallback_openai_models());
         }
         if models.is_empty() {
-            models.push(json!({"value": "none", "name": "No credentials configured", "provider": "none"}));
+            models.push(ModelOption::new(
+                "none",
+                "No credentials configured",
+                "none",
+            ));
         }
         models
+    }
+
+    fn fallback_anthropic_models() -> Vec<ModelOption> {
+        vec![
+            ModelOption::new("claude-sonnet-4-20250514", "Claude Sonnet 4", "anthropic"),
+            ModelOption::new("claude-haiku-4-20250514", "Claude Haiku 4", "anthropic"),
+        ]
+    }
+
+    fn fallback_openai_models() -> Vec<ModelOption> {
+        vec![
+            ModelOption::new("gpt-4.1-nano", "GPT-4.1 Nano", "openai"),
+            ModelOption::new("gpt-4.1-mini", "GPT-4.1 Mini", "openai"),
+            ModelOption::new("o4-mini", "o4-mini", "openai"),
+        ]
     }
 
     async fn handle_session_prompt(&mut self, id: u64, params: &Value) -> Vec<String> {
@@ -434,29 +470,25 @@ impl AcpServer {
             return self.error_response(id, -32602, "unsupported configId or empty value");
         }
 
-        // We need the cached model list; use sync fallback for validation
-        let models = Self::available_models_sync();
+        let models = if self.model_options.is_empty() {
+            Self::fallback_available_models()
+        } else {
+            self.model_options.clone()
+        };
         let matched = models
             .iter()
-            .find(|m| m.get("value").and_then(|v| v.as_str()) == Some(value));
-        if matched.is_none() {
-            return self.error_response(
-                id,
-                -32602,
-                &format!("unknown model: {value}. Use one from available_models."),
-            );
-        }
-
-        // Determine provider from model metadata (not name prefix)
-        let provider_name = matched
-            .unwrap()
-            .get("provider")
-            .and_then(|v| v.as_str())
-            .unwrap_or("openai");
+            .find(|m| m.value == value)
+            .cloned()
+            .ok_or_else(|| format!("unknown model: {value}. Use one from available_models."));
+        let matched = match matched {
+            Ok(m) => m,
+            Err(e) => return self.error_response(id, -32602, &e),
+        };
+        let provider_name = matched.provider.as_str();
 
         // Store in struct (safe — no env mutation)
         self.active_model = Some(value.to_string());
-        self.active_provider = Some(provider_name.to_string());
+        self.active_provider = Some(matched.provider.clone());
 
         // Rebuild the current session's provider so the switch takes effect immediately
         if !session_id.is_empty() && self.sessions.contains_key(session_id) {
@@ -570,5 +602,60 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("ANTHROPIC_API_KEY"));
+    }
+
+    #[test]
+    fn test_set_config_option_accepts_cached_dynamic_model() {
+        let mut server = AcpServer::new();
+        server.model_options = vec![ModelOption::new(
+            "claude-opus-4-20250514",
+            "Claude Opus 4",
+            "anthropic",
+        )];
+
+        let resp_str = server.handle_set_config_option(
+            4,
+            &json!({
+                "configId": "model",
+                "value": "claude-opus-4-20250514",
+            }),
+        );
+        let resp: Value = serde_json::from_str(&resp_str).unwrap();
+
+        assert!(resp["error"].is_null());
+        assert_eq!(
+            resp["result"]["configOptions"][0]["currentValue"],
+            "claude-opus-4-20250514"
+        );
+        assert_eq!(
+            server.active_model.as_deref(),
+            Some("claude-opus-4-20250514")
+        );
+        assert_eq!(server.active_provider.as_deref(), Some("anthropic"));
+    }
+
+    #[test]
+    fn test_set_config_option_rejects_unknown_model() {
+        let mut server = AcpServer::new();
+        server.model_options = vec![ModelOption::new(
+            "claude-opus-4-20250514",
+            "Claude Opus 4",
+            "anthropic",
+        )];
+
+        let resp_str = server.handle_set_config_option(
+            5,
+            &json!({
+                "configId": "model",
+                "value": "not-in-menu",
+            }),
+        );
+        let resp: Value = serde_json::from_str(&resp_str).unwrap();
+
+        assert_eq!(resp["error"]["code"], -32602);
+        assert!(resp["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown model"));
     }
 }
