@@ -33,6 +33,7 @@ USER node
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD pgrep -x openab || exit 1
 ENV OPENAB_AGENT_COMMAND=copilot
+ENV OPENAB_AGENT_AUTH_COMMAND="copilot auth"
 ENV OPENAB_AGENT_WORKING_DIR=/home/node
 
 ENTRYPOINT ["tini", "--"]
