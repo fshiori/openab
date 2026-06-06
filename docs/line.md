@@ -83,7 +83,13 @@ In the LINE Developers Console → **Messaging API** tab → scan the QR code wi
 
 - **1:1 chat** — send a message to the bot, get an AI agent response
 - **Group chat** — add the bot to a group, it responds to all messages
+- **Inbound images** — user-sent LINE images are downloaded through the LINE Content API and forwarded to OpenAB as image attachments
 - **Webhook signature validation** — HMAC-SHA256 via `LINE_CHANNEL_SECRET`
+
+> **Implementation tradeoff:** OpenAB now acknowledges LINE webhooks before image download/processing so slow attachment work is less likely to trigger webhook redelivery. The follow-up image download and event emission happen asynchronously, which keeps the request path short but also means a crash after the HTTP 200 can still lose that in-flight work. This PR intentionally keeps scope small and does not add a separate background-task durability or duplicate-suppression layer on top of early-ack.
+> Because image processing now happens after the ACK, an earlier image webhook can also reach OpenAB after a later text webhook from the same chat if the image path is slower.
+> OpenAB now also caps how many LINE payloads can enter that post-ACK path concurrently; once the cap is full, new webhooks wait for capacity instead of creating unbounded background backlog.
+> If a LINE-hosted image cannot be downloaded or decoded, OpenAB logs and skips that image event rather than synthesizing a fake text prompt.
 
 ### Not Supported (LINE API limitations)
 
@@ -91,13 +97,14 @@ In the LINE Developers Console → **Messaging API** tab → scan the QR code wi
 - **Reactions** — LINE Bot API does not support message reactions.
 - **@mention gating** — LINE does not expose mention entities. In groups, the bot responds to all messages. To limit this, use a dedicated group for the bot.
 - **Markdown rendering** — LINE uses its own text formatting. Agent replies are sent as plain text.
+- **External-content images** — LINE image messages backed by `contentProvider.type = "external"` are not downloaded yet.
 
 ## Environment Variables
 
 | Variable | Required | Description |
 |---|---|---|
 | `LINE_CHANNEL_SECRET` | Yes | Channel secret for webhook signature validation |
-| `LINE_CHANNEL_ACCESS_TOKEN` | Yes | Channel access token for Push Message API |
+| `LINE_CHANNEL_ACCESS_TOKEN` | Yes | Channel access token for Reply/Push Message API and LINE-hosted image downloads |
 
 ## Troubleshooting
 
