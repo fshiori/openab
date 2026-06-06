@@ -664,6 +664,7 @@ mod tests {
             ws_token: None,
             event_tx,
             reply_token_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            client: reqwest::Client::new(),
         })
     }
 
