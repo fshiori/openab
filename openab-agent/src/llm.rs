@@ -92,6 +92,13 @@ impl AnthropicProvider {
         })
     }
 
+    /// Create provider with a specific model override.
+    pub fn from_env_with_model(model: &str) -> Result<Self, String> {
+        let mut p = Self::from_env()?;
+        p.model = model.to_string();
+        Ok(p)
+    }
+
     fn build_request_body(&self, system: &str, messages: &[Message], tools: &[ToolDef]) -> Value {
         let msgs: Vec<Value> = messages
             .iter()
@@ -272,6 +279,13 @@ impl OpenAiProvider {
                 .unwrap_or(8192),
             client: reqwest::Client::new(),
         })
+    }
+
+    /// Create provider with a specific model override.
+    pub fn from_auth_store_with_model(model: &str) -> Result<Self, String> {
+        let mut p = Self::from_auth_store()?;
+        p.model = model.to_string();
+        Ok(p)
     }
 }
 
