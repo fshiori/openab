@@ -246,6 +246,11 @@ pub trait ChatAdapter: Send + Sync + 'static {
         self.send_message(channel, content).await
     }
 
+    /// Rename the thread/channel title. Default: no-op (not all platforms support it).
+    async fn rename_thread(&self, _channel: &ChannelRef, _title: &str) -> Result<()> {
+        Ok(())
+    }
+
     /// Delete a message. Used to remove streaming placeholders when reply_to is set.
     /// Default: edits to zero-width space (fallback for platforms without delete support).
     async fn delete_message(&self, msg: &MessageRef) -> Result<()> {
@@ -273,6 +278,10 @@ pub struct AdapterRouter {
     prompt_hard_timeout: std::time::Duration,
     /// Polling cadence for the recv-loop liveness check (#732).
     liveness_check_interval: std::time::Duration,
+    /// Workspace aliases from `[workspace.aliases]` config.
+    workspace_aliases: std::collections::HashMap<String, String>,
+    /// Bot home directory (security boundary for workspace directives).
+    bot_home: std::path::PathBuf,
 }
 
 impl AdapterRouter {
@@ -282,6 +291,8 @@ impl AdapterRouter {
         table_mode: TableMode,
         prompt_hard_timeout_secs: u64,
         liveness_check_secs: u64,
+        workspace_aliases: std::collections::HashMap<String, String>,
+        bot_home: std::path::PathBuf,
     ) -> Self {
         if liveness_check_secs >= prompt_hard_timeout_secs {
             warn!(
@@ -298,6 +309,8 @@ impl AdapterRouter {
             table_mode,
             prompt_hard_timeout: std::time::Duration::from_secs(prompt_hard_timeout_secs),
             liveness_check_interval: std::time::Duration::from_secs(liveness_check_secs),
+            workspace_aliases,
+            bot_home,
         }
     }
 
@@ -309,6 +322,16 @@ impl AdapterRouter {
     /// Access the reactions config (used by dispatch.rs).
     pub fn reactions_config(&self) -> &ReactionsConfig {
         &self.reactions_config
+    }
+
+    /// Workspace aliases for control directive resolution.
+    pub fn workspace_aliases_map(&self) -> std::collections::HashMap<String, String> {
+        self.workspace_aliases.clone()
+    }
+
+    /// Bot home path for workspace security boundary.
+    pub fn bot_home_path(&self) -> std::path::PathBuf {
+        self.bot_home.clone()
     }
 
     /// Pack one arrival event into ContentBlocks. Per-arrival layout:
@@ -368,7 +391,7 @@ impl AdapterRouter {
                 .unwrap_or(&ctx.thread_channel.channel_id)
         );
 
-        if let Err(e) = self.pool.get_or_create(&thread_key).await {
+        if let Err(e) = self.pool.get_or_create(&thread_key, None).await {
             let msg = format_user_error(&e.to_string());
             let _ = adapter
                 .send_message(&ctx.thread_channel, &format!("⚠️ {msg}"))

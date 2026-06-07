@@ -10,8 +10,8 @@ use async_trait::async_trait;
 use serenity::builder::{
     CreateActionRow, CreateAttachment, CreateButton, CreateCommand, CreateCommandOption,
     CreateInteractionResponse, CreateInteractionResponseFollowup, CreateInteractionResponseMessage,
-    CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, CreateThread, EditMessage,
-    GetMessages,
+    CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, CreateThread, EditChannel,
+    EditMessage, GetMessages,
 };
 use serenity::http::Http;
 use serenity::model::application::ButtonStyle;
@@ -182,6 +182,15 @@ impl ChatAdapter for DiscordAdapter {
                 MessageId::new(msg_id),
                 &ReactionType::Unicode(emoji.to_string()),
             )
+            .await?;
+        Ok(())
+    }
+
+    async fn rename_thread(&self, channel: &ChannelRef, title: &str) -> Result<()> {
+        let ch_id: u64 = Self::resolve_channel(channel).parse()?;
+        let truncated = if title.len() > 100 { &title[..100] } else { title };
+        ChannelId::new(ch_id)
+            .edit(&self.http, EditChannel::new().name(truncated))
             .await?;
         Ok(())
     }

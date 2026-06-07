@@ -28,6 +28,9 @@ struct PoolState {
     /// Serializes create/resume work per thread so rapid same-thread requests
     /// cannot race each other into duplicate `session/load` attempts.
     creating: HashMap<String, Arc<Mutex<()>>>,
+    /// Per-session working directory overrides (from control directives).
+    /// thread_key → canonical workspace path.
+    session_workdirs: HashMap<String, String>,
 }
 
 pub struct SessionPool {
@@ -35,6 +38,7 @@ pub struct SessionPool {
     config: AgentConfig,
     max_sessions: usize,
     mapping_path: PathBuf,
+    meta_path: PathBuf,
 }
 
 type EvictionCandidate = (String, Arc<Mutex<AcpConnection>>, Instant, Option<String>);
@@ -68,7 +72,9 @@ impl SessionPool {
             .join(".openab");
         let _ = std::fs::create_dir_all(&openab_dir);
         let mapping_path = openab_dir.join("thread_map.json");
+        let meta_path = openab_dir.join("session_meta.json");
         let suspended = Self::load_mapping(&mapping_path);
+        let session_workdirs = Self::load_mapping(&meta_path);
         Self {
             state: RwLock::new(PoolState {
                 active: HashMap::new(),
@@ -76,10 +82,12 @@ impl SessionPool {
                 persisted: suspended.clone(),
                 suspended,
                 creating: HashMap::new(),
+                session_workdirs,
             }),
             config,
             max_sessions,
             mapping_path,
+            meta_path,
         }
     }
 
@@ -109,7 +117,23 @@ impl SessionPool {
         }
     }
 
-    pub async fn get_or_create(&self, thread_id: &str) -> Result<()> {
+    fn save_meta(&self, workdirs: &HashMap<String, String>) {
+        let data = match serde_json::to_string_pretty(workdirs) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!(error = %e, "failed to serialize session metadata");
+                return;
+            }
+        };
+        let tmp = self.meta_path.with_extension("json.tmp");
+        if let Err(e) =
+            std::fs::write(&tmp, &data).and_then(|_| std::fs::rename(&tmp, &self.meta_path))
+        {
+            warn!(path = %self.meta_path.display(), error = %e, "failed to persist session metadata");
+        }
+    }
+
+    pub async fn get_or_create(&self, thread_id: &str, working_dir_override: Option<&str>) -> Result<()> {
         let create_gate = {
             let mut state = self.state.write().await;
             get_or_insert_gate(&mut state.creating, thread_id)
@@ -169,12 +193,33 @@ impl SessionPool {
             }
         }
 
+        // Resolve effective working directory: explicit override > stored per-session > global config.
+        let effective_workdir: String = if let Some(wd) = working_dir_override {
+            wd.to_string()
+        } else {
+            let state = self.state.read().await;
+            state
+                .session_workdirs
+                .get(thread_id)
+                .cloned()
+                .unwrap_or_else(|| self.config.working_dir.clone())
+        };
+
+        // Persist the workspace override for future reconnects/eviction rebuilds.
+        if working_dir_override.is_some() {
+            let mut state = self.state.write().await;
+            state
+                .session_workdirs
+                .insert(thread_id.to_string(), effective_workdir.clone());
+            self.save_meta(&state.session_workdirs);
+        }
+
         // Build the replacement connection outside the state lock so one stuck
         // initialization does not block all unrelated sessions.
         let mut new_conn = AcpConnection::spawn(
             &self.config.command,
             &self.config.args,
-            &self.config.working_dir,
+            &effective_workdir,
             &self.config.env,
             &self.config.inherit_env,
         )
@@ -185,7 +230,7 @@ impl SessionPool {
         let mut resumed = false;
         if let Some(ref sid) = saved_session_id {
             if new_conn.supports_load_session {
-                match new_conn.session_load(sid, &self.config.working_dir).await {
+                match new_conn.session_load(sid, &effective_workdir).await {
                     Ok(()) => {
                         info!(thread_id, session_id = %sid, "session resumed via session/load");
                         resumed = true;
@@ -198,7 +243,7 @@ impl SessionPool {
         }
 
         if !resumed {
-            new_conn.session_new(&self.config.working_dir).await?;
+            new_conn.session_new(&effective_workdir).await?;
             // Surface the reset banner both for restored sessions and for stale
             // live entries that died before we could recover a resumable
             // session id. In both cases the caller is continuing after an

@@ -3,6 +3,7 @@ mod adapter;
 mod bot_turns;
 mod config;
 mod cron;
+mod directives;
 mod discord;
 mod dispatch;
 mod error_display;
@@ -161,6 +162,10 @@ async fn main() -> anyhow::Result<()> {
         cfg.markdown.tables,
         cfg.pool.prompt_hard_timeout_secs,
         cfg.pool.liveness_check_secs,
+        cfg.workspace.aliases,
+        std::path::PathBuf::from(
+            std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()),
+        ),
     ));
 
     // Shutdown signal for Slack adapter

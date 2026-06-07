@@ -84,6 +84,16 @@ pub struct Config {
     pub cron: CronConfig,
     #[serde(default)]
     pub hooks: HooksConfig,
+    #[serde(default)]
+    pub workspace: WorkspaceConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct WorkspaceConfig {
+    /// Workspace aliases: `name = "~/path/to/project"`
+    /// Used with `[[ws:@alias]]` control directives.
+    #[serde(default)]
+    pub aliases: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
