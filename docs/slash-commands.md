@@ -21,7 +21,7 @@ All responses are **ephemeral** — only the user who invoked the command sees t
 |----------|-----------|-------|
 | Discord (guild threads) | ✅ | Commands registered per-guild for instant availability |
 | Discord (DMs) | ✅ | Commands registered globally; may take up to 1 hour to appear after first deploy |
-| Slack | ❌ | Slack blocks third-party slash commands in threads; see [slack-bot-howto.md](slack-bot-howto.md#slash-commands-are-not-supported-on-slack) |
+| Slack | ❌ | Slack blocks third-party slash commands in threads; see [slack.md](slack.md#slash-commands-are-not-supported-on-slack) |
 
 ## How They Work
 

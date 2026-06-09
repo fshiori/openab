@@ -81,7 +81,7 @@ See [docs/discord.md](docs/discord.md) for a detailed step-by-step guide.
 <details>
 <summary><strong>Slack</strong></summary>
 
-See [docs/slack-bot-howto.md](docs/slack-bot-howto.md) for a detailed step-by-step guide.
+See [docs/slack.md](docs/slack.md) for a detailed step-by-step guide.
 
 </details>
 
