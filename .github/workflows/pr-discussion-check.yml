@@ -44,13 +44,14 @@ jobs:
               return;
             }
 
-            // Exempt maintainers (openabdev/openab-maintainers team members)
-            try {
-              await github.rest.teams.getMembershipForUserInOrg({
-                org: 'openabdev',
-                team_slug: 'openab-maintainers',
-                username: pr.user.login
-              });
+            // Exempt maintainers (openabdev/openab-maintainers — team must be associated with repo)
+            const { data: maintainerMembers } = await github.rest.teams.listMembersInOrg({
+              org: 'openabdev',
+              team_slug: 'openab-maintainers',
+              per_page: 100
+            });
+            const maintainerLogins = new Set(maintainerMembers.map(m => m.login));
+            if (maintainerLogins.has(pr.user.login)) {
               console.log(`Skipping discussion check for maintainer ${pr.user.login}`);
               if (old) {
                 await github.rest.issues.deleteComment({ ...context.repo, comment_id: old.id });
@@ -59,9 +60,6 @@ jobs:
                 try { await github.rest.issues.removeLabel({ ...context.repo, issue_number: pr.number, name: label }); } catch (e) { if (e.status !== 404) throw e; }
               }
               return;
-            } catch (e) {
-              if (e.status !== 404) throw e;
-              // Not a maintainer, continue with check
             }
 
             if (!hasDiscordUrl) {
