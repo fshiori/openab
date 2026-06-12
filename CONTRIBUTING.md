@@ -75,6 +75,51 @@ cargo test
 cargo check
 ```
 
+## Development Tips
+
+### Agent subprocess environment
+
+OAB spawns agent adapters (agy-acp, codex-acp, etc.) as child processes with a **minimal environment** — only env vars explicitly listed in `[agent].env` config are passed. No `.profile`, `.bashrc`, or login shell is sourced.
+
+If your agent adapter spawns further subprocesses (e.g. `agy`, `codex`), those tools may depend on PATH entries set up by shell init files (fnm, nvm, cargo, etc.). **Do not rely on login shells (`bash -lc`)** — shell metacharacters in user prompts will break argument passing.
+
+Instead, augment PATH directly in your adapter code:
+
+```rust
+fn augmented_path() -> String {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/agent".to_string());
+    let base = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".to_string());
+    format!("{home}/bin:{home}/.local/bin:{home}/.local/share/fnm/aliases/default/bin:{base}")
+}
+
+// Then when spawning:
+Command::new("/usr/local/bin/agy")
+    .args(&args)
+    .env("PATH", augmented_path())
+    .spawn();
+```
+
+### E2E testing PRs
+
+Use the PR Preview Build workflow for fast iteration:
+
+```bash
+# 1. Push code to PR branch
+# 2. Build the image
+gh workflow run "PR Preview Build" --repo openabdev/openab \
+  --ref <branch> -f pr_number=<N> -f variant=<antigravity|codex|claude|default>
+
+# 3. Wait for build
+gh run view <run_id> --repo openabdev/openab --json conclusion -q .conclusion
+
+# 4. Deploy and test (depends on your environment)
+#    - Kubernetes: kubectl rollout restart deployment/<name>
+#    - ECS Fargate (OAB fleet): [ecsctl](https://github.com/oablab/ecsctl) restart <bot> --wait
+#    - Local: docker run with the PR image tag
+```
+
+**Never run two instances with the same bot token** — both receive messages and send duplicate/conflicting responses.
+
 ## Code Style
 
 - Run `cargo fmt` before committing
