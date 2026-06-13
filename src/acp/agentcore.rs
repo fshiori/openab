@@ -262,11 +262,21 @@ where
             .unwrap_or("")
             .to_string();
 
-        // Session must already exist (opened eagerly during session/new)
+        // Reconnect if session was lost (shell closed unexpectedly)
         if !self.sessions.contains_key(&acp_sid) {
-            self.write_error(id, -32000, "no active session — call session/new first")
-                .await?;
-            return Ok(());
+            info!("session lost, reconnecting shell...");
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            let runtime_sid = format!("oab-reconnect-{ts:020}-{ts:013x}");
+            match self.open_shell(&runtime_sid).await {
+                Ok(handle) => { self.sessions.insert(acp_sid.clone(), handle); }
+                Err(e) => {
+                    self.write_error(id, -32000, &format!("reconnect failed: {e}")).await?;
+                    return Ok(());
+                }
+            }
         }
 
         // Allocate ID before borrowing sessions
