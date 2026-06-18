@@ -86,8 +86,7 @@ jobs:
           if [ "$HAS_AUTOFIX" = "true" ]; then
             MODE="\n__mode: auto-fix__"
           fi
-          PAYLOAD=$(jq -n --arg content "<@${BOT_UID}> review ${PR_URL}\n\n__commit: ${SHA}__${MODE}" \
-            '{"content": $content}')
+          PAYLOAD=$(printf '<@%s> review %s\n\n__commit: %s__%s' "$BOT_UID" "$PR_URL" "$SHA" "$MODE" | jq -Rs '{content: .}')
           curl -sS --fail-with-body --max-time 10 -X POST "$WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD"
