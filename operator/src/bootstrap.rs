@@ -124,7 +124,19 @@ async fn create(config: &aws_config::SdkConfig) -> Result<()> {
             );
         }
         req.send().await.context("failed to create S3 bucket")?;
-        eprintln!("  ✓ Created S3 bucket: {bucket}");
+        // Block public access
+        s3.put_public_access_block()
+            .bucket(&bucket)
+            .public_access_block_configuration(
+                aws_sdk_s3::types::PublicAccessBlockConfiguration::builder()
+                    .block_public_acls(true)
+                    .ignore_public_acls(true)
+                    .block_public_policy(true)
+                    .restrict_public_buckets(true)
+                    .build(),
+            )
+            .send().await.ok();
+        eprintln!("  ✓ Created S3 bucket: {bucket} (public access blocked)");
     }
 
     // 2. ECS Cluster — save state incrementally after this point
