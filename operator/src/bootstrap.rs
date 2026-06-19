@@ -48,7 +48,7 @@ pub struct BootstrapResources {
 }
 
 /// Tracks which resources were created by bootstrap vs imported
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedFlags {
     pub cluster: bool,
@@ -233,7 +233,7 @@ async fn create(config: &aws_config::SdkConfig, imports: ImportOptions) -> Resul
             subnets: vec![],
             vpc_id: String::new(),
         },
-        managed: ManagedFlags::default(),
+        managed: managed.clone(),
         created_at: chrono_now(),
     };
     save_state(&s3, &bucket, &state).await.ok();
@@ -375,29 +375,49 @@ async fn teardown(config: &aws_config::SdkConfig) -> Result<()> {
         }
     }
 
-    // Reverse order
+    // Reverse order — only delete resources we created (managed)
     // 1. Log group
-    match logs.delete_log_group().log_group_name(LOG_GROUP).send().await {
-        Ok(_) => eprintln!("  ✓ Deleted log group: {LOG_GROUP}"),
-        Err(e) => eprintln!("  ⚠ Failed to delete log group: {e}"),
+    if state.managed.log_group {
+        match logs.delete_log_group().log_group_name(&state.resources.log_group).send().await {
+            Ok(_) => eprintln!("  ✓ Deleted log group: {}", state.resources.log_group),
+            Err(e) => eprintln!("  ⚠ Failed to delete log group: {e}"),
+        }
+    } else {
+        eprintln!("  → Skipping log group (imported)");
     }
 
     // 2. Security group
-    match ec2.delete_security_group().group_id(&state.resources.security_group_id).send().await {
-        Ok(_) => eprintln!("  ✓ Deleted security group: {}", state.resources.security_group_id),
-        Err(e) => eprintln!("  ⚠ Failed to delete security group (may have attached ENIs): {e}"),
+    if state.managed.security_group {
+        match ec2.delete_security_group().group_id(&state.resources.security_group_id).send().await {
+            Ok(_) => eprintln!("  ✓ Deleted security group: {}", state.resources.security_group_id),
+            Err(e) => eprintln!("  ⚠ Failed to delete security group: {e}"),
+        }
+    } else {
+        eprintln!("  → Skipping security group (imported)");
     }
 
     // 3. IAM roles
-    delete_role(&iam, TASK_ROLE).await;
-    eprintln!("  ✓ Deleted IAM role: {TASK_ROLE}");
-    delete_role(&iam, EXECUTION_ROLE).await;
-    eprintln!("  ✓ Deleted IAM role: {EXECUTION_ROLE}");
+    if state.managed.task_role {
+        delete_role(&iam, TASK_ROLE).await;
+        eprintln!("  ✓ Deleted IAM role: {TASK_ROLE}");
+    } else {
+        eprintln!("  → Skipping task role (imported)");
+    }
+    if state.managed.execution_role {
+        delete_role(&iam, EXECUTION_ROLE).await;
+        eprintln!("  ✓ Deleted IAM role: {EXECUTION_ROLE}");
+    } else {
+        eprintln!("  → Skipping execution role (imported)");
+    }
 
     // 4. ECS Cluster
-    match ecs.delete_cluster().cluster(CLUSTER_NAME).send().await {
-        Ok(_) => eprintln!("  ✓ Deleted ECS cluster: {CLUSTER_NAME}"),
-        Err(e) => eprintln!("  ⚠ Failed to delete cluster: {e}"),
+    if state.managed.cluster {
+        match ecs.delete_cluster().cluster(CLUSTER_NAME).send().await {
+            Ok(_) => eprintln!("  ✓ Deleted ECS cluster: {CLUSTER_NAME}"),
+            Err(e) => eprintln!("  ⚠ Failed to delete cluster: {e}"),
+        }
+    } else {
+        eprintln!("  → Skipping cluster (imported)");
     }
 
     // 5. Delete state file (keep bucket for user data)
