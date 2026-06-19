@@ -77,7 +77,7 @@ async fn apply_ecs(
 
     // Read current generation from S3 manifest (if exists), increment
     let manifest_key = format!("manifests/{}/{}.yaml", m.metadata.namespace, m.metadata.name);
-    let current_gen = match s3.get_object().bucket(bucket).key(&manifest_key).send().await {
+    let current_gen = match s3.get_object().bucket(&bucket).key(&manifest_key).send().await {
         Ok(resp) => {
             let bytes = resp.body.collect().await?.into_bytes();
             let existing: OABServiceManifest = serde_yaml::from_slice(&bytes)?;
@@ -92,7 +92,7 @@ async fn apply_ecs(
     manifest_to_store["metadata"]["generation"] = serde_yaml::Value::Number(generation.into());
     let manifest_yaml = serde_yaml::to_string(&manifest_to_store)?;
     s3.put_object()
-        .bucket(bucket)
+        .bucket(&bucket)
         .key(&manifest_key)
         .body(ByteStream::from(manifest_yaml.into_bytes()))
         .send()
