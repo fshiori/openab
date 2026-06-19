@@ -99,8 +99,12 @@ impl OABFleetManifest {
             let resources = agent.resources.clone()
                 .or(self.spec.template.resources.clone())
                 .unwrap_or(Resources { cpu: "256".into(), memory: "512".into() });
-            let secrets = agent.secrets.clone()
+            let base_secrets = agent.secrets.clone()
                 .unwrap_or_else(|| self.spec.template.secrets.clone());
+            // Interpolate ${name} in secret values
+            let secrets = base_secrets.into_iter().map(|(k, v)| {
+                (k, v.replace("${name}", &agent.name))
+            }).collect();
 
             OABServiceManifest {
                 api_version: self.api_version.clone(),
@@ -114,9 +118,10 @@ impl OABFleetManifest {
                     image: agent.image.clone()
                         .unwrap_or_else(|| self.spec.template.image.clone()),
                     resources,
-                    config_from: agent.config_from.clone(),
+                    config_from: agent.config_from.replace("${name}", &agent.name),
                     bootstrap_from: agent.bootstrap_from.clone()
-                        .or(self.spec.template.bootstrap_from.clone()),
+                        .or(self.spec.template.bootstrap_from.clone())
+                        .map(|s| s.replace("${name}", &agent.name)),
                     secrets,
                     runtime: self.spec.template.runtime.clone(),
                 },

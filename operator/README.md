@@ -102,6 +102,10 @@ spec:
 
 Each agent inherits from `template` and can override: `image`, `resources`, `bootstrapFrom`, `secrets`.
 
+**Notes:**
+- `runtime` is shared across all agents in a fleet (not overridable per-agent)
+- `${name}` is interpolated in `configFrom`, `bootstrapFrom`, and secret values (replaced with agent name)
+
 ## JSON Schema
 
 The manifest schema is defined in [`schema/oabservice-v2.json`](schema/oabservice-v2.json) for IDE validation.
