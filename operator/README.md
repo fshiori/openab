@@ -58,11 +58,19 @@ cd operator && cargo build --release
 # 1. Bootstrap infrastructure (one-time)
 oabctl bootstrap
 
-# 2. Create an agent (interactive wizard)
+# 2. Create an agent (generates config + manifest)
 oabctl create my-bot
 
-# 3. Done! Agent is running.
+# 3. Review generated files, then deploy
+oabctl apply -f my-bot/manifest.yaml
+
+# 4. Done! Agent is running.
 oabctl exec my-bot -- bash
+```
+
+Or skip the review step:
+```bash
+oabctl create my-bot --auto-apply   # generate + deploy in one shot
 ```
 
 ## Complete Workflow
@@ -112,8 +120,9 @@ oabctl sync ./skills my-bot:/home/agent/.kiro/skills/  # sync directory
 ### Updating Config
 
 ```bash
-vim my-bot/config.toml               # edit locally
-oabctl apply -f my-bot/manifest.yaml --sync   # upload + redeploy
+vim my-bot/config.toml                           # edit locally
+oabctl apply -f my-bot/manifest.yaml             # syncs config + redeploys
+oabctl apply -f my-bot/manifest.yaml --no-sync   # redeploy only (skip config sync)
 ```
 
 ### Fleet Deploy
@@ -301,9 +310,10 @@ s3://oab-control-plane-{account}/
 | `oabctl bootstrap` | One-time infra setup (plan + confirm) |
 | `oabctl bootstrap --delete` | Teardown managed resources |
 | `oabctl bootstrap --status` | Show bootstrap state |
-| `oabctl create <name>` | Interactive wizard to create + deploy agent |
-| `oabctl apply -f <file\|dir>` | Deploy from manifest |
-| `oabctl apply -f <file> --sync` | Upload local config.toml then deploy |
+| `oabctl create <name>` | Interactive wizard → generate config + manifest |
+| `oabctl create <name> --auto-apply` | Generate + deploy immediately |
+| `oabctl apply -f <file\|dir>` | Sync config + deploy (default) |
+| `oabctl apply -f <file> --no-sync` | Deploy without syncing config |
 | `oabctl get oabservice [name]` | List agents and status |
 | `oabctl delete oabservice <name>` | Teardown agent |
 | `oabctl exec <agent> -- <cmd>` | Execute command in container |
