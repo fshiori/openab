@@ -228,7 +228,7 @@ async fn apply_ecs(
     // Check if service exists
     let existing = ecs
         .describe_services()
-        .cluster("default")
+        .cluster("oab")
         .services(&service_name)
         .send()
         .await;
@@ -241,7 +241,7 @@ async fn apply_ecs(
 
     if service_active {
         ecs.update_service()
-            .cluster("default")
+            .cluster("oab")
             .service(&service_name)
             .task_definition(&task_def_arn)
             .network_configuration(network_config)
@@ -256,7 +256,7 @@ async fn apply_ecs(
             .build()?;
 
         ecs.create_service()
-            .cluster("default")
+            .cluster("oab")
             .service_name(&service_name)
             .task_definition(&task_def_arn)
             .desired_count(1)
@@ -273,7 +273,7 @@ async fn apply_ecs(
 
     if wait {
         eprintln!("  ⏳ Waiting for {} to stabilize...", m.metadata.name);
-        wait_for_stable(ecs, "default", &service_name).await?;
+        wait_for_stable(ecs, "oab", &service_name).await?;
         eprintln!("  ✓ {} is stable", m.metadata.name);
     }
 
