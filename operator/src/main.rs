@@ -22,9 +22,9 @@ enum Commands {
         /// Path to manifest file or directory
         #[arg(short, long)]
         file: String,
-        /// Sync local config.toml to S3 before applying
+        /// Skip syncing local config.toml to S3 before applying
         #[arg(long)]
-        sync: bool,
+        no_sync: bool,
     },
     /// Interactive wizard to create a new agent
     Create {
@@ -117,7 +117,7 @@ async fn main() -> anyhow::Result<()> {
     let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
 
     match cli.command {
-        Commands::Apply { file, sync } => apply::run(&config, &file, sync).await,
+        Commands::Apply { file, no_sync } => apply::run(&config, &file, !no_sync).await,
         Commands::Create { name, namespace } => create::run(&config, &name, &namespace).await,
         Commands::Get { resource, name, cluster } => get::run(&config, &resource, name.as_deref(), &cluster).await,
         Commands::Delete { resource, name, cluster, namespace } => {
