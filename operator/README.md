@@ -52,9 +52,6 @@ CLI tool that provisions and manages OpenAB agents on Amazon ECS Fargate (with K
 ## Quick Start
 
 ```bash
-# Build
-cd operator && cargo build --release
-
 # 1. Bootstrap infrastructure (one-time)
 oabctl bootstrap
 
