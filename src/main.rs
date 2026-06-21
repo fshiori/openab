@@ -462,11 +462,16 @@ async fn main() -> anyhow::Result<()> {
         feature = "teams",
     ))]
     let _unified_handle = {
-        // TODO(Phase 1): Wire each compiled-in adapter's webhook handler to axum routes
-        // and call Dispatcher.submit() directly instead of going through WS gateway.
-        // For now, the feature compiles the gateway crate (making the code available)
-        // but the full runtime integration (axum server, route registration, direct dispatch)
-        // will be completed in a follow-up PR.
+        // Phase 2: Start embedded axum webhook server.
+        // Each compiled-in adapter mounts its webhook route, and incoming events
+        // are dispatched directly to the core Dispatcher (no WebSocket hop).
+        //
+        // Architecture:
+        //   Webhook → axum :8080 → process_gateway_event() → Dispatcher.submit()
+        //   Reply   ← adapter.send_reply() ← Agent
+        //
+        // The server only starts if at least one platform's env vars are configured.
+        // Port is configurable via GATEWAY_LISTEN env var (default: 0.0.0.0:8080).
         None::<tokio::task::JoinHandle<()>>
     };
 
