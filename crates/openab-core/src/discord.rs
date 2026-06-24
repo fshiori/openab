@@ -1711,7 +1711,7 @@ impl Handler {
         // Single-flight guard — prevent concurrent /auth invocations.
         static AUTH_IN_PROGRESS: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(false);
-        if AUTH_IN_PROGRESS.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        if AUTH_IN_PROGRESS.swap(true, std::sync::atomic::Ordering::Acquire) {
             let response = CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new()
                     .content("⚠️ Authentication already in progress. Please wait for it to complete.")
@@ -1724,7 +1724,7 @@ impl Handler {
         let auth_cmd = match std::env::var("OPENAB_AGENT_AUTH_COMMAND") {
             Ok(val) if !val.is_empty() => val,
             _ => {
-                AUTH_IN_PROGRESS.store(false, std::sync::atomic::Ordering::SeqCst);
+                AUTH_IN_PROGRESS.store(false, std::sync::atomic::Ordering::Release);
                 let response = CreateInteractionResponse::Message(
                     CreateInteractionResponseMessage::new()
                         .content("⚠️ No auth command configured (`OPENAB_AGENT_AUTH_COMMAND` not set).")
@@ -1740,7 +1740,7 @@ impl Handler {
             CreateInteractionResponseMessage::new().ephemeral(true),
         );
         if let Err(e) = cmd.create_response(&ctx.http, defer).await {
-            AUTH_IN_PROGRESS.store(false, std::sync::atomic::Ordering::SeqCst);
+            AUTH_IN_PROGRESS.store(false, std::sync::atomic::Ordering::Release);
             tracing::error!(error = %e, "failed to defer /auth response");
             return;
         }
@@ -1758,7 +1758,7 @@ impl Handler {
             struct AuthGuard;
             impl Drop for AuthGuard {
                 fn drop(&mut self) {
-                    AUTH_IN_PROGRESS.store(false, std::sync::atomic::Ordering::SeqCst);
+                    AUTH_IN_PROGRESS.store(false, std::sync::atomic::Ordering::Release);
                 }
             }
             let _guard = AuthGuard;
