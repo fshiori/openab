@@ -47,16 +47,46 @@ use async_trait::async_trait;
 /// Sentinel value the agent returns when it has nothing to add.
 const NO_REPLY_SENTINEL: &str = "[no_reply]";
 
-/// System instruction prepended to every ambient batch.
-const AMBIENT_SYSTEM_INSTRUCTION: &str = r#"You are in ambient mode. Below is a batch of recent messages from the channel. You are passively observing the conversation.
+/// Maximum characters to read from the instructions file.
+const INSTRUCTIONS_FILE_MAX_CHARS: usize = 2000;
+
+/// Default system instruction used when no instructions file is found.
+const DEFAULT_AMBIENT_SYSTEM_INSTRUCTION: &str = r#"You are in ambient mode. Below is a batch of recent messages from the channel. You are passively observing the conversation.
 
 Rules:
-- If you have nothing valuable to add, reply EXACTLY: [NO_REPLY]
-- Only reply when you can provide meaningful help, context, or corrections
-- Do not reply to other bot messages unless directly relevant to a human's question
-- Keep replies concise and natural — you are joining an ongoing conversation, not starting one
+- If you truly have nothing to add, reply EXACTLY: [NO_REPLY]
+- Feel free to jump in when you can help, share relevant knowledge, offer suggestions, or add to the discussion
+- You can respond to interesting topics, answer questions (even if not directed at you), or provide useful context
+- Keep replies concise and natural — you are part of the conversation
 - Do not acknowledge that you are in ambient mode
 "#;
+
+/// Load ambient system instruction from the configured file path.
+/// Falls back to `DEFAULT_AMBIENT_SYSTEM_INSTRUCTION` if the file does not exist.
+/// Truncates to `INSTRUCTIONS_FILE_MAX_CHARS` characters.
+fn load_instructions(path: &str) -> String {
+    let expanded = if path.starts_with("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            std::path::PathBuf::from(home).join(&path[2..])
+        } else {
+            std::path::PathBuf::from(path)
+        }
+    } else {
+        std::path::PathBuf::from(path)
+    };
+
+    match std::fs::read_to_string(&expanded) {
+        Ok(content) => {
+            let truncated: String = content.chars().take(INSTRUCTIONS_FILE_MAX_CHARS).collect();
+            info!(path = %expanded.display(), chars = truncated.len(), "ambient: loaded custom instructions");
+            truncated
+        }
+        Err(_) => {
+            debug!(path = %expanded.display(), "ambient: instructions file not found, using default");
+            DEFAULT_AMBIENT_SYSTEM_INSTRUCTION.to_string()
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // AmbientMessage — lighter than BufferedMessage for ambient buffering
@@ -258,6 +288,8 @@ pub struct AmbientDispatcher {
     enabled_channels: HashSet<u64>,
     /// Global semaphore limiting concurrent flush operations.
     flush_semaphore: Arc<Semaphore>,
+    /// Loaded system instruction (from file or default).
+    instructions: String,
 }
 
 impl AmbientDispatcher {
@@ -273,6 +305,7 @@ impl AmbientDispatcher {
             .filter_map(|s| s.parse().ok())
             .collect();
         let flush_semaphore = Arc::new(Semaphore::new(config.max_concurrent_flushes.max(1)));
+        let instructions = load_instructions(&config.instructions_file);
         if config.enabled && !enabled_channels.is_empty() {
             tracing::info!(
                 channels = ?enabled_channels,
@@ -284,6 +317,7 @@ impl AmbientDispatcher {
             channels: Mutex::new(HashMap::new()),
             enabled_channels,
             flush_semaphore,
+            instructions,
         }
     }
 
@@ -357,6 +391,7 @@ impl AmbientDispatcher {
                 Arc::clone(&post_guard),
                 adapter,
                 target,
+                self.instructions.clone(),
             ));
 
             channels.insert(
@@ -422,6 +457,7 @@ async fn ambient_consumer_loop(
     post_guard: Arc<PostGuard>,
     adapter: Arc<dyn ChatAdapter>,
     target: Arc<dyn DispatchTarget>,
+    instructions: String,
 ) {
     info!(channel_id = %channel_id, "ambient consumer started");
 
@@ -505,7 +541,7 @@ async fn ambient_consumer_loop(
 
         // Build the batch payload.
         let session_key = format!("ambient:{}:{}", channel_ref.platform, channel_id);
-        let content_blocks = build_ambient_payload(&batch);
+        let content_blocks = build_ambient_payload(&batch, &instructions);
 
         // Ensure session exists.
         if let Err(e) = target.ensure_session(&session_key, None).await {
@@ -580,12 +616,12 @@ async fn ambient_consumer_loop(
 // ---------------------------------------------------------------------------
 
 /// Build the content blocks for an ambient batch dispatch.
-fn build_ambient_payload(batch: &[AmbientMessage]) -> Vec<ContentBlock> {
+fn build_ambient_payload(batch: &[AmbientMessage], instructions: &str) -> Vec<ContentBlock> {
     let mut blocks = Vec::new();
 
     // System instruction.
     blocks.push(ContentBlock::Text {
-        text: AMBIENT_SYSTEM_INSTRUCTION.to_string(),
+        text: instructions.to_string(),
     });
 
     // Format batch as conversation transcript.
