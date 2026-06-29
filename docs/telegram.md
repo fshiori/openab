@@ -1,6 +1,83 @@
 # Telegram Setup
 
-Connect a Telegram bot to OpenAB via the Custom Gateway.
+Connect a Telegram bot to OpenAB.
+
+## Deployment Modes
+
+| Mode | Description | When to use |
+|------|-------------|-------------|
+| **Unified** (recommended) | Single OAB binary with embedded webhook server | New deployments, ECS, k8s, Zeabur |
+| **Standalone Gateway** | Separate gateway process, OAB connects via WebSocket | Legacy deployments, custom routing |
+
+## Unified Mode (Recommended)
+
+The OAB binary embeds the Telegram adapter directly. No separate gateway container needed.
+
+```
+Telegram ──POST──▶ OAB (:8080/webhook/telegram) ──▶ Agent (stdio)
+```
+
+### Prerequisites
+
+- OAB image with unified features compiled in (default since v0.9.0-beta.4)
+- A Telegram bot token (from [@BotFather](https://t.me/BotFather))
+- A public HTTPS URL for the webhook
+
+### Configuration
+
+Set environment variables:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `TELEGRAM_BOT_TOKEN` | Yes | Bot API token from @BotFather |
+| `TELEGRAM_SECRET_TOKEN` | No | Webhook signature validation |
+| `TELEGRAM_BOT_USERNAME` | No | Bot username for @mention gating |
+| `TELEGRAM_RICH_MESSAGES` | No | `true` (default) for rich formatting |
+| `GATEWAY_LISTEN` | No | Listen address (default: `0.0.0.0:8080`) |
+
+OAB config (`config.toml`) — minimal:
+
+```toml
+[agent]
+env = { KIRO_API_KEY = "${KIRO_API_KEY}" }
+```
+
+All other sections (`[pool]`, `[reactions]`, `[markdown]`) are optional with sensible defaults:
+- Pool: 10 sessions, 24h TTL
+- Reactions: enabled, keep after reply
+- Markdown tables: default rendering
+
+Override only what you need:
+
+```toml
+[agent]
+env = { KIRO_API_KEY = "${KIRO_API_KEY}" }
+
+[pool]
+max_sessions = 3
+session_ttl_hours = 1
+
+[markdown]
+tables = "off"    # Let Telegram render tables natively via Rich Messages
+```
+
+No `[gateway]` section needed — the unified adapter activates automatically when `TELEGRAM_BOT_TOKEN` is set.
+
+### Set the Webhook
+
+```bash
+export BOT_TOKEN="your-bot-token"
+export WEBHOOK_URL="https://your-public-url"
+export SECRET="your-webhook-secret"
+
+curl "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook?url=${WEBHOOK_URL}/webhook/telegram&secret_token=${SECRET}"
+```
+
+---
+
+## Standalone Gateway Mode (Legacy)
+
+For deployments that need a separate gateway process (e.g., custom webhook routing, multi-gateway fan-out).
 
 ```
 Telegram ──POST──▶ Gateway (:8080) ◀──WebSocket── OAB Pod

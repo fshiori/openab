@@ -1,5 +1,8 @@
 # Feishu / Lark
 
+
+> **Unified Mode (v0.9.0+):** The OAB binary now embeds the feishu adapter directly. Set `FEISHU_APP_ID` as an env var — no separate gateway container or `[gateway]` config needed. See [Telegram docs](telegram.md#unified-mode-recommended) for the pattern.
+
 Connect OpenAB to Feishu (China) or Lark (international) so users can chat with an AI agent in DMs or group chats.
 
 ## Prerequisites
