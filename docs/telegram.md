@@ -35,19 +35,16 @@ Set environment variables:
 | `TELEGRAM_RICH_MESSAGES` | No | `true` (default) for rich formatting |
 | `GATEWAY_LISTEN` | No | Listen address (default: `0.0.0.0:8080`) |
 
-OAB config (`config.toml`) — minimal:
+OAB config (`config.toml`):
+
+**Minimal** — just pass the API key to the agent:
 
 ```toml
 [agent]
 env = { KIRO_API_KEY = "${KIRO_API_KEY}" }
 ```
 
-All other sections (`[pool]`, `[reactions]`, `[markdown]`) are optional with sensible defaults:
-- Pool: 10 sessions, 24h TTL
-- Reactions: enabled, keep after reply
-- Markdown tables: default rendering
-
-Override only what you need:
+**Recommended** — with tuned pool, streaming, and native table rendering:
 
 ```toml
 [agent]
@@ -57,8 +54,11 @@ env = { KIRO_API_KEY = "${KIRO_API_KEY}" }
 max_sessions = 3
 session_ttl_hours = 1
 
+[reactions]
+tool_display = "compact"
+
 [markdown]
-tables = "off"    # Let Telegram render tables natively via Rich Messages
+tables = "off"
 ```
 
 No `[gateway]` section needed — the unified adapter activates automatically when `TELEGRAM_BOT_TOKEN` is set.
