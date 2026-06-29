@@ -286,6 +286,13 @@ fn is_complex_markdown(text: &str) -> bool {
     })
 }
 
+/// Compute a stable draft_id from channel + thread to avoid collisions in forum topics.
+fn compute_draft_id(chat_id: &str, thread_id: &Option<String>) -> i64 {
+    let chan: i64 = chat_id.parse::<i64>().unwrap_or(1).abs();
+    let tid: i64 = thread_id.as_deref().and_then(|t| t.parse::<i64>().ok()).unwrap_or(0).abs();
+    (chan.wrapping_add(tid)) % 1_000_000 + 1
+}
+
 /// Send a rich message via Bot API 10.1 sendRichMessage.
 ///
 /// Design: we pass agent markdown directly via InputRichMessage.markdown.
@@ -424,9 +431,7 @@ pub async fn handle_reply(
                     &reply.content.text
                 };
                 // Combine channel + thread to avoid draft_id collision in forum topics
-                let chan: i64 = reply.channel.id.parse::<i64>().unwrap_or(1).abs();
-                let tid: i64 = reply.channel.thread_id.as_deref().and_then(|t| t.parse::<i64>().ok()).unwrap_or(0).abs();
-                let draft_id: i64 = (chan.wrapping_add(tid)) % 1_000_000 + 1;
+                let draft_id = compute_draft_id(&reply.channel.id, &reply.channel.thread_id);
                 let _ = send_rich_message_draft(client, bot_token, &reply.channel.id, &reply.channel.thread_id, draft_id, text).await;
             }
             // else: rich_messages=false with dummy ref — silently drop (no real msg to edit)
@@ -462,12 +467,22 @@ pub async fn handle_reply(
                 _ => None,
             };
             if let Some(text) = thinking_text {
-                let chan: i64 = reply.channel.id.parse::<i64>().unwrap_or(1).abs();
-                let tid: i64 = reply.channel.thread_id.as_deref().and_then(|t| t.parse::<i64>().ok()).unwrap_or(0).abs();
-                let draft_id: i64 = (chan.wrapping_add(tid)) % 1_000_000 + 1;
+                let draft_id = compute_draft_id(&reply.channel.id, &reply.channel.thread_id);
                 let _ = send_rich_message_draft(
                     client, bot_token, &reply.channel.id, &reply.channel.thread_id, draft_id, text,
                 ).await;
+            }
+        }
+        // Dismiss thinking draft immediately on remove_reaction
+        if rich_messages && reply.command.as_deref() == Some("remove_reaction") {
+            let is_thinking_emoji = matches!(reply.content.text.as_str(), "👀" | "🤔" | "👨\u{200d}💻" | "🔥" | "⚡");
+            if is_thinking_emoji {
+                let draft_id = compute_draft_id(&reply.channel.id, &reply.channel.thread_id);
+                if let Err(e) = send_rich_message_draft(
+                    client, bot_token, &reply.channel.id, &reply.channel.thread_id, draft_id, "",
+                ).await {
+                    warn!("failed to dismiss thinking draft: {e}");
+                }
             }
         }
 
