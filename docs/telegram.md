@@ -74,7 +74,7 @@ Instead of (or in addition to) the `TELEGRAM_*` env vars, you can configure Tele
 
 ```toml
 [telegram]
-bot_token = "123456789:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+bot_token = "${TELEGRAM_BOT_TOKEN}"
 ```
 
 **Full example** with all available fields:
