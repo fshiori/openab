@@ -200,10 +200,11 @@ async fn main() -> anyhow::Result<()> {
     );
 
     if cfg.discord.is_none() && cfg.slack.is_none() && cfg.gateway.is_none()
+        && cfg.telegram.is_none()
         && !has_unified_platform_env()
     {
         anyhow::bail!(
-            "no adapter configured — add [discord], [slack], or [gateway] to config, or set platform env vars (TELEGRAM_BOT_TOKEN, etc.)"
+            "no adapter configured — add [discord], [slack], [telegram], or [gateway] to config, or set platform env vars (TELEGRAM_BOT_TOKEN, etc.)"
         );
     }
 
@@ -497,7 +498,7 @@ async fn main() -> anyhow::Result<()> {
     let _unified_handle = {
         use openab_core::gateway::{GatewayEventContext, process_gateway_event};
 
-        if has_unified_platform_env() {
+        if has_unified_platform_env() || cfg.telegram.is_some() {
             let listen_addr = std::env::var("GATEWAY_LISTEN")
                 .unwrap_or_else(|_| "0.0.0.0:8080".into());
 
@@ -517,7 +518,26 @@ async fn main() -> anyhow::Result<()> {
             let (event_tx, _) = tokio::sync::broadcast::channel::<String>(256);
 
             // Build gateway AppState from env vars (shared factory with standalone gateway)
-            let gw_state = Arc::new(openab_gateway::AppState::from_env(event_tx.clone(), None));
+            let mut gw_state_inner = openab_gateway::AppState::from_env(event_tx.clone(), None);
+
+            // First-class `[telegram]` config overrides env-derived values
+            // (config-authoritative + ${} expansion + TELEGRAM_* env fallback).
+            #[cfg_attr(not(feature = "telegram"), allow(unused_variables))]
+            let telegram_webhook_path = if let Some(ref tg) = cfg.telegram {
+                let r = tg.resolve();
+                let path = r.webhook_path.clone();
+                gw_state_inner.apply_telegram_config(openab_gateway::GatewayTelegramConfig {
+                    bot_token: r.bot_token,
+                    secret_token: r.secret_token,
+                    rich_messages: r.rich_messages,
+                    trusted_source_only: r.trusted_source_only,
+                    streaming: r.streaming,
+                });
+                Some(path)
+            } else {
+                None
+            };
+            let gw_state = Arc::new(gw_state_inner);
 
             // Build axum router with platform webhook routes
             let mut app = axum::Router::new()
@@ -525,8 +545,10 @@ async fn main() -> anyhow::Result<()> {
 
             #[cfg(feature = "telegram")]
             if gw_state.telegram_bot_token.is_some() {
-                let path = std::env::var("TELEGRAM_WEBHOOK_PATH")
-                    .unwrap_or_else(|_| "/webhook/telegram".into());
+                let path = telegram_webhook_path.clone().unwrap_or_else(|| {
+                    std::env::var("TELEGRAM_WEBHOOK_PATH")
+                        .unwrap_or_else(|_| "/webhook/telegram".into())
+                });
                 info!(path = %path, "unified: telegram adapter enabled");
                 app = app.route(&path, axum::routing::post(openab_gateway::adapters::telegram::webhook));
             }
