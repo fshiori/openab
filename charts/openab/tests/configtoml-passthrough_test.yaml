@@ -49,8 +49,7 @@ tests:
       - hasDocuments:
           count: 0
 
-  - it: falls back to Helm rendering when configToml is absent
+  - it: fails with a clear error when neither configToml nor configUrl is set
     asserts:
-      - matchRegex:
-          path: data["config.toml"]
-          pattern: '\[agent\]'
+      - failedTemplate:
+          errorPattern: "was removed in chart v0.10.0"

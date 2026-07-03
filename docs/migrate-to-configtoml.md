@@ -1,9 +1,8 @@
 # Migrating to `configToml`
 
-`configToml` lets you write `config.toml` directly instead of relying on the
-Helm-rendered path (`slack.*`, `discord.*`, `pool.*`, etc. in `values.yaml`).
-The Helm-rendered path is deprecated and unmaintained — see the tracking
-issue for its removal timeline: https://github.com/openabdev/openab/issues/1278
+Chart v0.10.0 removes the Helm-rendered config path (`slack.*`, `discord.*`,
+`pool.*`, etc. in `values.yaml`). Use `configToml` to write `config.toml`
+directly instead.
 
 For the platform-agnostic option (works identically on Kubernetes, ECS,
 Zeabur, and AgentCore Runtime — no chart required), see `configUrl` instead:
