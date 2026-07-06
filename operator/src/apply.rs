@@ -524,10 +524,50 @@ async fn apply_ecs(
             create_req = create_req.service_registries(registry.build());
         }
 
-        create_req
-            .send()
-            .await
-            .context("failed to create ECS service")?;
+        // Retry with backoff if ECS reports "still Draining" (race with a
+        // recent delete that hasn't fully completed yet).
+        // Match on the typed error code (InvalidParameterException) rather than
+        // raw message text to be resilient to SDK/API wording changes.
+        use aws_sdk_ecs::error::ProvideErrorMetadata;
+        let mut last_err = None;
+        for attempt in 0..12 {
+            match create_req.clone().send().await {
+                Ok(_) => {
+                    if attempt > 0 {
+                        eprintln!(" ok");
+                    }
+                    last_err = None;
+                    break;
+                }
+                Err(e) => {
+                    let is_draining = e.code() == Some("InvalidParameterException")
+                        && e.message()
+                            .unwrap_or_default()
+                            .to_lowercase()
+                            .contains("draining");
+                    if is_draining {
+                        if attempt == 0 {
+                            eprint!("  ⏳ Service still draining, retrying...");
+                        } else {
+                            eprint!(".");
+                        }
+                        last_err = Some(e);
+                        if attempt < 11 {
+                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        }
+                    } else {
+                        if attempt > 0 {
+                            eprintln!(" failed");
+                        }
+                        return Err(e).context("failed to create ECS service");
+                    }
+                }
+            }
+        }
+        if let Some(e) = last_err {
+            eprintln!(" timed out");
+            return Err(anyhow::anyhow!(e)).context("failed to create ECS service after retries");
+        }
         println!(
             "  ✓ {} created ({}, {}cpu/{}mem{})",
             m.metadata.name,
