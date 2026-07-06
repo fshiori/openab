@@ -13,6 +13,7 @@ on:
         type: choice
         options:
           - default
+          - kiro
           - unified
           - agentcore
           - antigravity
@@ -45,6 +46,7 @@ jobs:
       dockerfile: ${{ steps.df.outputs.file }}
       suffix: ${{ steps.df.outputs.suffix }}
       build_args: ${{ steps.df.outputs.build_args }}
+      tag_suffix: ${{ steps.df.outputs.tag_suffix }}
     steps:
       - name: Get PR branch
         id: pr
@@ -62,6 +64,13 @@ jobs:
             echo "file=Dockerfile" >> "$GITHUB_OUTPUT"
             echo "suffix=" >> "$GITHUB_OUTPUT"
             echo "build_args=" >> "$GITHUB_OUTPUT"
+            echo "tag_suffix=" >> "$GITHUB_OUTPUT"
+          elif [ "${{ inputs.variant }}" = "kiro" ]; then
+            # Unified build (all platforms) tagged as :pr<N>-kiro
+            echo "file=Dockerfile" >> "$GITHUB_OUTPUT"
+            echo "suffix=" >> "$GITHUB_OUTPUT"
+            echo "build_args=BUILD_MODE=unified" >> "$GITHUB_OUTPUT"
+            echo "tag_suffix=-kiro" >> "$GITHUB_OUTPUT"
           elif [ "${{ inputs.variant }}" = "unified" ]; then
             # Same base Dockerfile as "default", but built with BUILD_MODE=unified
             # so the telegram/line/feishu/wecom/googlechat/teams gateway adapters
@@ -73,10 +82,12 @@ jobs:
             echo "file=Dockerfile" >> "$GITHUB_OUTPUT"
             echo "suffix=" >> "$GITHUB_OUTPUT"
             echo "build_args=BUILD_MODE=unified" >> "$GITHUB_OUTPUT"
+            echo "tag_suffix=" >> "$GITHUB_OUTPUT"
           else
             echo "file=Dockerfile.${{ inputs.variant }}" >> "$GITHUB_OUTPUT"
             echo "suffix=-${{ inputs.variant }}" >> "$GITHUB_OUTPUT"
             echo "build_args=" >> "$GITHUB_OUTPUT"
+            echo "tag_suffix=" >> "$GITHUB_OUTPUT"
           fi
 
   build:
@@ -155,5 +166,5 @@ jobs:
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ needs.resolve-pr.outputs.suffix }}"
           docker buildx imagetools create \
-            -t "${IMAGE}:pr${{ inputs.pr_number }}" \
+            -t "${IMAGE}:pr${{ inputs.pr_number }}${{ needs.resolve-pr.outputs.tag_suffix }}" \
             $(printf "${IMAGE}@sha256:%s " $(ls /tmp/digests/))
