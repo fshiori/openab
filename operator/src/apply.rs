@@ -468,6 +468,7 @@ async fn apply_ecs(
             .cluster("oab")
             .service(&service_name)
             .task_definition(&task_def_arn)
+            .enable_execute_command(true)
             .network_configuration(network_config);
 
         if let Some(cm) = &cloud_map {
@@ -522,6 +523,7 @@ async fn apply_ecs(
             .service_name(&service_name)
             .task_definition(&task_def_arn)
             .desired_count(1)
+            .enable_execute_command(true)
             .capacity_provider_strategy(cap_strategy)
             .network_configuration(network_config);
 
