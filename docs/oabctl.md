@@ -583,7 +583,7 @@ s3://oab-control-plane-{account}/
 | `oabctl exec <agent> -- <cmd>` | Execute command in container |
 | `oabctl cp <src> <dst>` | Copy files to/from container |
 | `oabctl sync <src> <dst>` | Sync directories (bidirectional) |
-| `oabctl scale <alias> <size>` | Immediately set desired task count (0–100) |
+| `oabctl scale <alias> <size>` | Immediately set desired task count (0 or 1) |
 | `oabctl schedule create <alias> <size> --expr '<expression>'` | Create/update recurring schedule |
 | `oabctl schedule create <alias> <size> --expr '<expression>' --timezone 'Asia/Taipei'` | Schedule with IANA timezone |
 | `oabctl schedule list` | List all scaling schedules |

@@ -97,7 +97,7 @@ enum Commands {
     Scale {
         /// Agent name or ecsctl alias
         alias: String,
-        /// Desired task count (0–100)
+        /// Desired task count (0 or 1)
         #[arg(value_parser = clap::value_parser!(i32).range(0..=1))]
         size: i32,
     },
@@ -144,7 +144,7 @@ enum ScheduleAction {
     Create {
         /// Agent name (OAB service)
         alias: String,
-        /// Desired task count (0–100)
+        /// Desired task count (0 or 1)
         #[arg(value_parser = clap::value_parser!(i32).range(0..=1))]
         size: i32,
         /// Schedule expression: cron(...), rate(...), or at(...)
