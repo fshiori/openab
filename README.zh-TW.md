@@ -6,31 +6,44 @@
 
 ![OpenAB banner](images/banner.jpg)
 
-一個輕量、安全、雲端原生的 ACP harness，透過 stdio JSON-RPC 將 **Discord、Slack** 與任何相容於 [Agent Client Protocol](https://github.com/anthropics/agent-protocol) 的程式開發 CLI（Kiro CLI、Claude Code、Codex、Gemini、OpenCode、MiMo-Code、Copilot CLI、Hermes、Grok Build、Devin、Antigravity、Pi 等）連接起來，帶來新一代的開發體驗。**Telegram、LINE、Feishu/Lark、Google Chat** 以及其他以 webhook 為基礎的平台，則透過獨立的 [Custom Gateway](crates/openab-gateway/) 支援。
+一個輕量、安全、雲端原生的 ACP harness，透過 stdio JSON-RPC 將 **Discord、Slack** 與任何相容於 [Agent Client Protocol](https://github.com/anthropics/agent-protocol) 的程式開發 CLI（Kiro CLI、Claude Code、Codex、Gemini、OpenCode、MiMo-Code、Copilot CLI、Hermes、Grok Build、Devin、Antigravity、Pi 等）連接起來，帶來新一代的開發體驗。**Telegram、LINE、Feishu/Lark、Google Chat、WeCom 與 Microsoft Teams** 則由 gateway adapters 支援；可將 adapters 編入 unified binary，或部署為獨立的 [Custom Gateway](crates/openab-gateway/)。
 
 🪼 **加入我們的社群！** 歡迎到 Discord 和大家打招呼：**[🪼 OpenAB — Official](https://openab.dev/discord)** 🎉
 
 ```
-┌──────────────┐  Gateway WS   ┌──────────────┐  ACP stdio    ┌──────────────────┐
-│   Discord    │◄─────────────►│              │──────────────►│   coding CLI     │
-│   User       │               │    openab    │◄── JSON-RPC ──│   (acp mode)     │
-├──────────────┤  Socket Mode  │    (Rust)    │               ├──────────────────┤
-│   Slack      │◄─────────────►│              │               │ kiro-cli acp     │
-│   User       │               └──────┬───────┘               │ claude-agent-acp │
-├──────────────┤                      │  WebSocket            │ codex-acp        │
-│   Telegram   │◄──webhook──┐         │   (outbound)          │ gemini --acp     │
-│   User       │            │         │                       │ copilot --acp    │
-├──────────────┤            ▼         ▼                       │ hermes-acp       │
-│   LINE       │◄──webhook──┌──────────────────┐              │ opencode acp     │
-│   User       │            │  Custom Gateway  │              │ mimo acp         │
-├──────────────┤            │  (standalone)    │              │ grok agent stdio │
-│  Feishu/Lark │◄───WS──────│                  │              │ devin acp        │
-│   User       │            │                  │              │ agy-acp          │
-├──────────────┤            │                  │              │ pi-acp           │
-│ Google Chat  │◄──webhook──│                  │              └──────────────────┘
-│   User       │            └──────────────────┘
+┌──────────────┐  Gateway WS  ┌─────────────────┐  ACP stdio  ┌─────────────────────────┐
+│ Discord      │◄────────────►│                 │────────────►│ agent runtime           │
+│ User         │              │ openab (Rust)   │◄──JSON-RPC──│ (ACP process)           │
+├──────────────┤  Socket Mode │ thin ACP broker │             ├─────────────────────────┤
+│ Slack        │◄────────────►│                 │             │ kiro-cli acp            │
+│ User         │              └────────┬────────┘             │ claude-agent-acp        │
+├──────────────┤                       ▲                      │ codex-acp               │
+│ Telegram     │◄webhook/API─►┐        │                      │  └─ Codex app-server    │
+│ User         │              │        │ WebSocket            │ gemini --acp            │
+├──────────────┤              │        │ (standalone)         │ copilot --acp           │
+│ LINE         │◄webhook/API─►┤        │ or in-process        │ cursor-agent acp        │
+│ User         │              │        │ (unified)            │ hermes-acp              │
+├──────────────┤              │ ┌──────┴───────────┐          │ opencode acp            │
+│ Feishu/Lark  │◄─WS/webhook─►┼►│ gateway adapters │          │ mimo acp                │
+│ User         │              │ │ standalone or    │          │ grok agent stdio        │
+├──────────────┤              │ │ embedded unified │          │ devin acp               │
+│ Google Chat  │◄webhook/API─►┤ └──────────────────┘          │ agy-acp                 │
+│ User         │              │                               │ pi-acp                  │
+├──────────────┤              │                               │ openab-agent            │
+│ WeCom        │◄webhook/API─►┤                               │ agentcore-acp           │
+│ User         │              │                               │  └─ AWS AgentCore       │
+├──────────────┤              │                               │ custom ACP agent        │
+│ MS Teams     │◄webhook/API─►┘                               └─────────────────────────┘
+│ User         │
 └──────────────┘
 ```
+
+OpenAB 仍是 thin broker：所有 platform adapters 都會進入同一套
+dispatcher 與 session pool，再透過單一 ACP stdio boundary 連接所選的
+agent runtime。Gateway adapters 可作為 standalone companion 執行，也可
+內嵌於 unified build，兩種部署方式都不會改變這個 boundary。Platform
+edge 的 labels 會分別呈現 inbound delivery 與 outbound reply：webhook
+platforms 使用 `webhook/API`，Feishu/Lark 則使用 `WS/webhook`。
 
 ## 示範
 
@@ -39,7 +52,7 @@
 ## 功能特色
 
 - **多平台支援** — 支援 Discord 與 Slack，可單獨或同時執行
-- **Custom Gateway** — 透過獨立的 [gateway](crates/openab-gateway/) 擴充至 Telegram、LINE、Feishu/Lark、Google Chat、MS Teams
+- **Gateway adapters** — 可透過獨立的 [gateway](crates/openab-gateway/) 或 opt-in unified build 擴充至 Telegram、LINE、Feishu/Lark、Google Chat、WeCom 與 Microsoft Teams
 - **可替換的 agent backend** — 可透過設定在 Kiro CLI、Claude Code、Codex、Gemini、OpenCode、MiMo-Code、Copilot CLI、Hermes、Grok Build、Devin、Antigravity、Pi 之間切換
 - **@mention 觸發** — 在允許的頻道中 mention bot，即可開始對話
 - **以討論串進行多輪對話** — 自動建立討論串；後續訊息不需再次 @mention
