@@ -24,6 +24,13 @@ pub const LINE_WEBHOOK_CONCURRENCY_MAX: usize = 8;
 
 // --- App state (shared across all adapters) ---
 
+/// Whether a webhook platform's L1 (transport authentication) is unenforceable:
+/// the platform is active (configured to receive traffic) but its verification
+/// secret is not configured, so it accepts unauthenticated POSTs. See #1356.
+fn l1_unenforceable(active: bool, l1_configured: bool) -> bool {
+    active && !l1_configured
+}
+
 pub struct AppState {
     pub telegram_bot_token: Option<String>,
     pub telegram_secret_token: Option<String>,
@@ -192,6 +199,107 @@ impl AppState {
         }
     }
 
+    /// Phase 1 L1 audit (#1356): warn loudly for each **active** webhook
+    /// platform whose transport authentication (L1) secret is unconfigured.
+    ///
+    /// When L1 is skipped, the webhook accepts unauthenticated POSTs, so the
+    /// per-platform `allowed_users` (L3) allowlist is forgeable — an attacker
+    /// can POST an envelope with an allowlisted sender id and pass the trust
+    /// gate. Phase 1 only warns (backward-compatible: existing no-secret
+    /// deployments keep running); a later phase may escalate to a hard error.
+    ///
+    /// `feishu_webhook_route_mounted`: whether the caller actually mounted the
+    /// Feishu webhook route. The two binaries differ — the standalone gateway
+    /// mounts it only in Webhook connection mode, while the unified binary
+    /// mounts it unconditionally — so exposure is the caller's knowledge, not
+    /// derivable from `AppState` alone.
+    ///
+    /// Call this once at startup **after** all config overrides are applied
+    /// (e.g. after `apply_telegram_config`), so a config-supplied secret is not
+    /// falsely reported as missing. WeCom and MS Teams are intentionally
+    /// omitted: their adapters treat the L1 secret as a construction
+    /// precondition (`from_env` returns `None` without it) and verify every
+    /// request, so they cannot be active-but-unconfigured.
+    #[cfg_attr(not(feature = "feishu"), allow(unused_variables))]
+    pub fn warn_unenforceable_l1(&self, feishu_webhook_route_mounted: bool) {
+        use tracing::warn;
+        for (platform, hint) in self.unenforceable_l1(feishu_webhook_route_mounted) {
+            warn!(
+                platform,
+                hint,
+                "L1 webhook authentication is NOT configured — this webhook accepts \
+                 unauthenticated requests, so the per-platform allowed_users (L3) allowlist \
+                 is forgeable: an attacker can POST a spoofed allowlisted sender id and pass \
+                 the trust gate. Configure the platform's webhook secret/signature to make \
+                 identity trust enforceable. \
+                 See https://github.com/openabdev/openab/issues/1356."
+            );
+        }
+    }
+
+    /// The platforms whose L1 is unenforceable right now, with a remediation
+    /// hint each. Separated from the warn wrapper so the per-platform
+    /// active/configured wiring is unit-testable.
+    #[cfg_attr(not(feature = "feishu"), allow(unused_variables))]
+    fn unenforceable_l1(
+        &self,
+        feishu_webhook_route_mounted: bool,
+    ) -> Vec<(&'static str, &'static str)> {
+        // (platform, active, l1_configured, remediation hint)
+        #[allow(unused_mut)]
+        let mut checks: Vec<(&str, bool, bool, &str)> = vec![
+            (
+                "telegram",
+                self.telegram_bot_token.is_some(),
+                // secret_token is the primary L1; the trusted_source_only IP
+                // allowlist is a weaker-but-real alternate L1 (ADR Layer 1).
+                self.telegram_secret_token.is_some() || self.telegram_trusted_source_only,
+                "set TELEGRAM_SECRET_TOKEN (or [telegram].secret_token), or enable \
+                 TELEGRAM_TRUSTED_SOURCE_ONLY",
+            ),
+            (
+                "line",
+                // Any LINE env present = an operator intends to run LINE. With
+                // no LINE env at all the route still mounts, but spoofed events
+                // then face the core trust gate's deny-all default, so we avoid
+                // a false-positive warn on gateways that don't use LINE.
+                self.line_channel_secret.is_some() || self.line_access_token.is_some(),
+                self.line_channel_secret.is_some(),
+                "set LINE_CHANNEL_SECRET",
+            ),
+        ];
+        #[cfg(feature = "feishu")]
+        checks.push((
+            "feishu",
+            // Active = the webhook route is actually exposed (caller-supplied:
+            // the standalone gateway mounts it only in Webhook connection
+            // mode; the unified binary mounts it unconditionally). Websocket
+            // delivery itself needs no L1 secret — events arrive over an
+            // outbound long-connection.
+            self.feishu.is_some() && feishu_webhook_route_mounted,
+            self.feishu
+                .as_ref()
+                .map(|f| f.config.encrypt_key.is_some())
+                .unwrap_or(false),
+            "set FEISHU_ENCRYPT_KEY",
+        ));
+        #[cfg(feature = "googlechat")]
+        checks.push((
+            "googlechat",
+            self.google_chat.is_some(),
+            self.google_chat
+                .as_ref()
+                .map(|a| a.jwt_verifier.is_some())
+                .unwrap_or(false),
+            "set GOOGLE_CHAT_AUDIENCE",
+        ));
+        checks
+            .into_iter()
+            .filter(|(_, active, l1_configured, _)| l1_unenforceable(*active, *l1_configured))
+            .map(|(platform, _, _, hint)| (platform, hint))
+            .collect()
+    }
+
     /// Apply resolved `[telegram]` config values, overriding the env-derived
     /// fields. Accepts a `GatewayTelegramConfig` to keep this crate free of an
     /// `openab-core` dependency (the binary crate resolves config → this struct).
@@ -264,9 +372,8 @@ pub async fn serve(config: ServeConfig) -> anyhow::Result<()> {
     if telegram_bot_token.is_some() {
         let webhook_path =
             std::env::var("TELEGRAM_WEBHOOK_PATH").unwrap_or_else(|_| "/webhook/telegram".into());
-        if telegram_secret_token.is_none() {
-            warn!("TELEGRAM_SECRET_TOKEN not set — webhook requests are NOT validated (insecure)");
-        }
+        // Missing-secret warning is emitted by warn_unenforceable_l1 below,
+        // which also accounts for the trusted_source_only IP-allowlist L1.
         info!(path = %webhook_path, "telegram adapter enabled");
         app = app.route(&webhook_path, post(adapters::telegram::webhook));
     }
@@ -451,6 +558,20 @@ pub async fn serve(config: ServeConfig) -> anyhow::Result<()> {
         line_webhook_semaphore: Arc::new(Semaphore::new(LINE_WEBHOOK_CONCURRENCY_MAX)),
         client,
     });
+
+    // Phase 1 L1 audit (#1356): warn if any active webhook platform has no
+    // transport authentication configured (identity trust unenforceable).
+    // The standalone gateway mounts the feishu webhook route only in Webhook
+    // connection mode (see the route setup above).
+    #[cfg(feature = "feishu")]
+    let feishu_webhook_route_mounted = state
+        .feishu
+        .as_ref()
+        .map(|f| f.config.connection_mode == adapters::feishu::ConnectionMode::Webhook)
+        .unwrap_or(false);
+    #[cfg(not(feature = "feishu"))]
+    let feishu_webhook_route_mounted = false;
+    state.warn_unenforceable_l1(feishu_webhook_route_mounted);
 
     // Background: sweep expired reply tokens
     {
@@ -670,4 +791,69 @@ async fn handle_oab_connection(state: Arc<AppState>, socket: axum::extract::ws::
 
 async fn health() -> &'static str {
     "ok"
+}
+
+#[cfg(test)]
+mod l1_audit_tests {
+    use super::{l1_unenforceable, AppState};
+    use tokio::sync::broadcast;
+
+    #[test]
+    fn warns_only_when_active_and_secret_missing() {
+        // active platform, no L1 secret → unenforceable (warn)
+        assert!(l1_unenforceable(true, false));
+        // active with L1 configured → fine
+        assert!(!l1_unenforceable(true, true));
+        // inactive platform → never warn, regardless of L1
+        assert!(!l1_unenforceable(false, false));
+        assert!(!l1_unenforceable(false, true));
+    }
+
+    fn state() -> AppState {
+        let (tx, _rx) = broadcast::channel(4);
+        AppState::test_default(tx)
+    }
+
+    fn flagged(s: &AppState) -> Vec<&'static str> {
+        s.unenforceable_l1(false)
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect()
+    }
+
+    #[test]
+    fn inactive_platforms_are_never_flagged() {
+        // test_default is all-None → nothing configured, nothing active.
+        assert!(flagged(&state()).is_empty());
+        // …even when a feishu webhook route is reported as mounted (no adapter).
+        assert!(state().unenforceable_l1(true).is_empty());
+    }
+
+    #[test]
+    fn telegram_active_without_l1_is_flagged() {
+        let mut s = state();
+        s.telegram_bot_token = Some("bot".into());
+        assert_eq!(flagged(&s), vec!["telegram"]);
+
+        // secret_token satisfies L1
+        s.telegram_secret_token = Some("sec".into());
+        assert!(flagged(&s).is_empty());
+
+        // trusted_source_only is an accepted alternate L1
+        s.telegram_secret_token = None;
+        s.telegram_trusted_source_only = true;
+        assert!(flagged(&s).is_empty());
+    }
+
+    #[test]
+    fn line_flagged_only_when_active_without_secret() {
+        let mut s = state();
+        // access token present but no channel secret → active, L1 missing
+        s.line_access_token = Some("tok".into());
+        assert_eq!(flagged(&s), vec!["line"]);
+
+        // channel secret present → L1 enforced
+        s.line_channel_secret = Some("csecret".into());
+        assert!(flagged(&s).is_empty());
+    }
 }

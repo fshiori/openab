@@ -7,7 +7,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use super::feishu_card;
 
@@ -3332,7 +3332,9 @@ pub async fn webhook(
             }
         }
     } else {
-        warn!("FEISHU_ENCRYPT_KEY not configured — webhook signature verification is SKIPPED (insecure)");
+        // L1 unenforceable is surfaced once at startup by
+        // AppState::warn_unenforceable_l1 (#1356); avoid a per-request warn flood.
+        debug!("FEISHU_ENCRYPT_KEY not configured — webhook signature verification is SKIPPED");
     }
 
     // Parse body — may be encrypted

@@ -869,6 +869,14 @@ async fn main() -> anyhow::Result<()> {
             };
             let gw_state = Arc::new(gw_state_inner);
 
+            // Phase 1 L1 audit (#1356): warn if any active webhook platform has
+            // no transport authentication configured. Called after
+            // apply_telegram_config so a config-supplied secret is not falsely
+            // flagged as missing. The unified binary mounts the feishu webhook
+            // route unconditionally (see NOTE at the mount below), so feishu
+            // exposure is `true` whenever the adapter is configured.
+            gw_state.warn_unenforceable_l1(true);
+
             // Build axum router with platform webhook routes
             let mut app =
                 axum::Router::new().route("/health", axum::routing::get(|| async { "ok" }));
@@ -897,6 +905,14 @@ async fn main() -> anyhow::Result<()> {
 
             #[cfg(feature = "feishu")]
             if gw_state.feishu.is_some() {
+                // NOTE (#1356 L1 audit): unlike the standalone gateway (which
+                // mounts this route only in Webhook connection mode), the
+                // unified binary mounts it unconditionally — and never spawns
+                // the Websocket client. Deployments relying on Feishu-side
+                // webhook delivery while FEISHU_CONNECTION_MODE is unset
+                // (default: websocket) work only because of this mount, so
+                // gating it is a behavior change that needs its own
+                // deprecation path — tracked on #1356, not changed here.
                 let path = std::env::var("FEISHU_WEBHOOK_PATH")
                     .unwrap_or_else(|_| "/webhook/feishu".into());
                 info!(path = %path, "unified: feishu adapter enabled");
