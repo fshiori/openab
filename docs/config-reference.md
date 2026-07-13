@@ -197,6 +197,21 @@ Full first-class Google Chat section (config-first parity, #1379) — credential
 
 ## `[teams]`
 
+Full first-class Teams section (config-first parity, #1380) — credentials, connection, and L3 identity trust. Each field resolves: config → `TEAMS_*` env → default. `app_id` + `app_secret` are mandatory (after env fallback); an incomplete section disables the adapter.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `app_id` | string | — | Azure AD app (bot) ID. Env: `TEAMS_APP_ID`. |
+| `app_secret` | string | — | App client secret. Env: `TEAMS_APP_SECRET`. |
+| `allowed_tenants` | string[] | `[]` (all) | Restrict to tenant IDs. Env: `TEAMS_ALLOWED_TENANTS`. |
+| `oauth_endpoint` | string | Bot Framework | Env: `TEAMS_OAUTH_ENDPOINT`. |
+| `openid_metadata` | string | Bot Framework | Env: `TEAMS_OPENID_METADATA`. |
+| `webhook_path` | string | `/webhook/teams` | Env: `TEAMS_WEBHOOK_PATH`. |
+| `allow_all_users` | bool \| omit | `false` (deny-all) | Env: `TEAMS_ALLOW_ALL_USERS`. |
+| `allowed_users` | string[] | `[]` | `activity.from.id` values (`29:…`). Env: `TEAMS_ALLOWED_USERS`. |
+
+<details><summary>Previous trust-only description</summary>
+
 First-class L3 identity trust — same shape and semantics as `[line]`. Each section replaces the uniform `GATEWAY_ALLOW_ALL_USERS` / `GATEWAY_ALLOWED_USERS` env vars for its platform (deprecated: warns at startup, becomes an error in Phase 2). Platform credentials remain on the gateway env vars (`TEAMS_APP_ID`/`TEAMS_APP_SECRET`) until the Teams config-first parity slice lands (#1380).
 
 > **Mode scoping:** these sections (like `[line]`) take effect on the **embedded/unified adapter path**, where events pass the shared ingress trust gate. Deployments using the standalone `openab-gateway` companion over WebSocket enforce trust via `[gateway].allow_all_users` / `allowed_users` instead; Phase 1c consolidates the two paths.
@@ -219,6 +234,8 @@ Sender ID formats per platform:
 allowed_users = ["29:1abc..."]
 # allow_all_users = true   # explicit opt-in only
 ```
+
+</details>
 
 ---
 

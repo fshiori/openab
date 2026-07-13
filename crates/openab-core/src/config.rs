@@ -175,7 +175,7 @@ pub struct Config {
     pub line: Option<LineConfig>,
     pub wecom: Option<WecomConfig>,
     pub googlechat: Option<GoogleChatConfig>,
-    pub teams: Option<PlatformTrustConfig>,
+    pub teams: Option<TeamsConfig>,
     pub agentcore: Option<AgentCoreConfig>,
     #[serde(default)]
     pub agent: AgentConfig,
@@ -1075,16 +1075,110 @@ impl GoogleChatConfig {
     }
 }
 
-/// Shared first-class trust section for gateway platforms whose Phase 1 needs
-/// exactly the two L3 identity fields (identity-trust-none ADR): `[teams]`.
-/// Same shape and resolution order as
-/// [`LineConfig`] / [`TelegramConfig`]: `[section].field` (with `${}`
-/// expansion) → `{PREFIX}_*` env var → deny-all default.
-///
-/// Trust-only by design — platform credentials stay on the gateway env vars
-/// the webhook adapters read (`TEAMS_APP_ID`/`TEAMS_APP_SECRET`).
-/// Also serves as the shared trust-fields view type returned by the
-/// graduated sections' `trust_config()`. Platforms that later
+/// First-class `[teams]` section — credentials, connection, and L3 identity
+/// trust for the MS Teams adapter. Config-first invariant (#1375): each field
+/// resolves `[teams].field` (with `${}` expansion) → `TEAMS_*` env var →
+/// default. Graduates from the shared [`PlatformTrustConfig`] (#1380).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct TeamsConfig {
+    /// Azure AD app (bot) ID. Env fallback: `TEAMS_APP_ID`.
+    pub app_id: Option<String>,
+    /// App client secret. Env fallback: `TEAMS_APP_SECRET`.
+    pub app_secret: Option<String>,
+    /// Restrict to tenant IDs. Env fallback: `TEAMS_ALLOWED_TENANTS`
+    /// (comma-separated). Empty = all tenants.
+    pub allowed_tenants: Option<Vec<String>>,
+    /// OAuth token endpoint. Env fallback: `TEAMS_OAUTH_ENDPOINT`
+    /// (default: Bot Framework endpoint).
+    pub oauth_endpoint: Option<String>,
+    /// OpenID metadata URL for JWT validation. Env fallback:
+    /// `TEAMS_OPENID_METADATA` (default: Bot Framework metadata).
+    pub openid_metadata: Option<String>,
+    /// Webhook mount path. Env fallback: `TEAMS_WEBHOOK_PATH`
+    /// (default `/webhook/teams`).
+    pub webhook_path: Option<String>,
+    /// Explicit flag: true = allow all users, false = check `allowed_users`.
+    /// Defaults to `false` (deny-all). Env fallback: `TEAMS_ALLOW_ALL_USERS`.
+    pub allow_all_users: Option<bool>,
+    /// Bot Framework `activity.from.id` values (`29:…`) allowed to interact.
+    /// Env fallback: `TEAMS_ALLOWED_USERS` (comma-separated).
+    pub allowed_users: Option<Vec<String>>,
+}
+
+/// Fully resolved Teams settings (config → env → default applied).
+#[derive(Debug, Clone)]
+pub struct ResolvedTeams {
+    pub app_id: Option<String>,
+    pub app_secret: Option<String>,
+    pub allowed_tenants: Vec<String>,
+    pub oauth_endpoint: String,
+    pub openid_metadata: String,
+    pub webhook_path: String,
+    pub allow_all_users: bool,
+    pub allowed_users: Vec<String>,
+}
+
+impl TeamsConfig {
+    /// Resolve every field: config value (if set) → `TEAMS_*` env → default.
+    pub fn resolve(&self) -> ResolvedTeams {
+        let opt_str = |cfg: &Option<String>, env: &str| -> Option<String> {
+            cfg.as_ref()
+                .filter(|s| !s.is_empty())
+                .cloned()
+                .or_else(|| std::env::var(env).ok())
+        };
+        let csv = |cfg: &Option<Vec<String>>, env: &str| -> Vec<String> {
+            match cfg {
+                Some(list) => list.clone(),
+                None => std::env::var(env)
+                    .unwrap_or_default()
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+            }
+        };
+        ResolvedTeams {
+            app_id: opt_str(&self.app_id, "TEAMS_APP_ID"),
+            app_secret: opt_str(&self.app_secret, "TEAMS_APP_SECRET"),
+            allowed_tenants: csv(&self.allowed_tenants, "TEAMS_ALLOWED_TENANTS"),
+            oauth_endpoint: opt_str(&self.oauth_endpoint, "TEAMS_OAUTH_ENDPOINT").unwrap_or_else(
+                || "https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token".into(),
+            ),
+            openid_metadata: opt_str(&self.openid_metadata, "TEAMS_OPENID_METADATA")
+                .unwrap_or_else(|| {
+                    "https://login.botframework.com/v1/.well-known/openidconfiguration".into()
+                }),
+            webhook_path: opt_str(&self.webhook_path, "TEAMS_WEBHOOK_PATH")
+                .unwrap_or_else(|| "/webhook/teams".into()),
+            allow_all_users: self.allow_all_users.unwrap_or_else(|| {
+                std::env::var("TEAMS_ALLOW_ALL_USERS")
+                    .ok()
+                    .filter(|v| !v.is_empty())
+                    .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+                    .unwrap_or(false)
+            }),
+            allowed_users: csv(&self.allowed_users, "TEAMS_ALLOWED_USERS"),
+        }
+    }
+
+    /// Trust-fields view for the shared registry override path.
+    pub fn trust_config(&self) -> PlatformTrustConfig {
+        PlatformTrustConfig {
+            allow_all_users: self.allow_all_users,
+            allowed_users: self.allowed_users.clone(),
+        }
+    }
+}
+
+/// Shared trust-fields view (L3 identity, identity-trust-none ADR) returned
+/// by the platform sections' `trust_config()` for the registry override path.
+/// All platform sections have graduated to dedicated structs (#1375); this
+/// type remains as the common denominator the binary's
+/// `platform_trust_override` consumes. Resolution order per field:
+/// `[section].field` → `{PREFIX}_*` env var → deny-all default.
+/// Platforms that later
 /// need extra trust fields (e.g. `trusted_bot_ids`) graduate to their own
 /// struct, as LINE will for group policy.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -2462,6 +2556,64 @@ allowed_users = ["U1234567890abcdef0123456789abcdef"]
         std::env::remove_var("GOOGLE_CHAT_AUDIENCE");
     }
 
+    /// All `TEAMS_*` env scenarios in ONE test (env is process-global).
+    /// NOTE: uses only TEAMS_APP_ID/TEAMS_OAUTH_ENDPOINT to avoid racing
+    /// `platform_trust_resolve_all_scenarios` (TEAMS_ALLOW_ALL_USERS/USERS)
+    /// and main.rs's env tests (which touch TEAMS_APP_ID in the bin crate —
+    /// separate process, safe).
+    #[test]
+    fn teams_resolve_all_scenarios() {
+        for k in ["TEAMS_APP_ID", "TEAMS_OAUTH_ENDPOINT"] {
+            std::env::remove_var(k);
+        }
+        // --- defaults ---
+        let r = TeamsConfig::default().resolve();
+        assert!(r.app_id.is_none());
+        assert_eq!(r.webhook_path, "/webhook/teams");
+        assert!(r.oauth_endpoint.contains("botframework.com"));
+        assert!(r.openid_metadata.contains("openidconfiguration"));
+        assert!(r.allowed_tenants.is_empty());
+
+        // --- config wins over env ---
+        std::env::set_var("TEAMS_APP_ID", "env-app");
+        std::env::set_var("TEAMS_OAUTH_ENDPOINT", "https://env.example/token");
+        let cfg = TeamsConfig {
+            app_id: Some("cfg-app".into()),
+            oauth_endpoint: Some("https://cfg.example/token".into()),
+            allowed_tenants: Some(vec!["t1".into(), "t2".into()]),
+            ..Default::default()
+        };
+        let r = cfg.resolve();
+        assert_eq!(r.app_id.as_deref(), Some("cfg-app"));
+        assert_eq!(r.oauth_endpoint, "https://cfg.example/token");
+        assert_eq!(r.allowed_tenants, vec!["t1".to_string(), "t2".to_string()]);
+
+        // --- empty-string ${} expansion falls through to env ---
+        let cfg = TeamsConfig {
+            app_id: Some("".into()),
+            ..Default::default()
+        };
+        let r = cfg.resolve();
+        assert_eq!(r.app_id.as_deref(), Some("env-app"));
+        assert_eq!(r.oauth_endpoint, "https://env.example/token");
+
+        // --- trust_config() view ---
+        let cfg = TeamsConfig {
+            allow_all_users: Some(true),
+            allowed_users: Some(vec!["29:abc".into()]),
+            ..Default::default()
+        };
+        let t = cfg.trust_config();
+        assert_eq!(t.allow_all_users, Some(true));
+        assert_eq!(
+            t.allowed_users.as_deref(),
+            Some(&["29:abc".to_string()][..])
+        );
+
+        std::env::remove_var("TEAMS_APP_ID");
+        std::env::remove_var("TEAMS_OAUTH_ENDPOINT");
+    }
+
     #[test]
     fn platform_trust_sections_parse_from_toml() {
         let toml_str = r#"
@@ -2478,6 +2630,7 @@ audience = "projects/p/..."
 allowed_users = ["users/123456789"]
 
 [teams]
+app_id = "app-1"
 allow_all_users = true
 "#;
         let cfg = parse_config_str(toml_str, "test").unwrap();
@@ -2496,6 +2649,7 @@ allow_all_users = true
             Some(&["users/123456789".to_string()][..])
         );
         let teams = cfg.teams.expect("teams section");
+        assert_eq!(teams.app_id.as_deref(), Some("app-1"));
         assert_eq!(teams.allow_all_users, Some(true));
 
         // Absent sections → None (trust falls back to legacy GATEWAY_* seed).

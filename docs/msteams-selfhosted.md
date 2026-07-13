@@ -31,6 +31,18 @@ tables = "off"
 
 Set `TEAMS_APP_ID` and `TEAMS_APP_SECRET` on the container. No `[gateway]` needed.
 
+### `[teams]` Section (credentials + trust)
+
+Since #1380 the `[teams]` section carries the full adapter configuration — config-first with `TEAMS_*` env fallback:
+
+```toml
+[teams]
+app_id     = "${TEAMS_APP_ID}"
+app_secret = "${TEAMS_APP_SECRET}"
+allowed_tenants = ["<tenant-guid>"]
+allowed_users   = ["29:1abc..."]
+```
+
 ### User Trust (`[teams]` section)
 
 Identity trust defaults to **deny-all** (identity-trust-none ADR): unknown senders are rejected until explicitly admitted. Configure trust with a first-class `[teams]` section:

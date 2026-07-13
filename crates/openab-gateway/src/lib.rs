@@ -45,6 +45,9 @@ pub struct AppState {
     pub line_webhook_path: String,
     #[cfg(feature = "teams")]
     pub teams: Option<adapters::teams::TeamsAdapter>,
+    /// Webhook mount path for Teams (env: `TEAMS_WEBHOOK_PATH`; config-first
+    /// via `apply_teams_config`, default `/webhook/teams`).
+    pub teams_webhook_path: String,
     pub teams_service_urls: Mutex<HashMap<String, (String, Instant)>>,
     #[cfg(feature = "feishu")]
     pub feishu: Option<adapters::feishu::FeishuAdapter>,
@@ -85,6 +88,7 @@ impl AppState {
             line_webhook_path: "/webhook/line".into(),
             #[cfg(feature = "teams")]
             teams: None,
+            teams_webhook_path: "/webhook/teams".into(),
             teams_service_urls: Mutex::new(HashMap::new()),
             #[cfg(feature = "feishu")]
             feishu: None,
@@ -132,6 +136,8 @@ impl AppState {
             info!("teams adapter configured");
             adapters::teams::TeamsAdapter::new(config)
         });
+        let teams_webhook_path =
+            std::env::var("TEAMS_WEBHOOK_PATH").unwrap_or_else(|_| "/webhook/teams".into());
 
         // Feishu
         #[cfg(feature = "feishu")]
@@ -179,6 +185,7 @@ impl AppState {
             line_webhook_path,
             #[cfg(feature = "teams")]
             teams,
+            teams_webhook_path,
             teams_service_urls: Mutex::new(HashMap::new()),
             #[cfg(feature = "feishu")]
             feishu,
@@ -359,6 +366,25 @@ impl AppState {
             None
         };
     }
+
+    /// Apply resolved `[teams]` config values (#1380), rebuilding the adapter
+    /// through the same `from_reader` construction as env-only startup
+    /// (app_id + app_secret mandatory; incomplete section disables the
+    /// adapter, matching env-only semantics).
+    #[cfg(feature = "teams")]
+    pub fn apply_teams_config(&mut self, cfg: GatewayTeamsConfig) {
+        self.teams_webhook_path = cfg.webhook_path;
+        let tenants = cfg.allowed_tenants.join(",");
+        self.teams = adapters::teams::TeamsConfig::from_reader(|k| match k {
+            "TEAMS_APP_ID" => cfg.app_id.clone(),
+            "TEAMS_APP_SECRET" => cfg.app_secret.clone(),
+            "TEAMS_OAUTH_ENDPOINT" => Some(cfg.oauth_endpoint.clone()),
+            "TEAMS_OPENID_METADATA" => Some(cfg.openid_metadata.clone()),
+            "TEAMS_ALLOWED_TENANTS" => Some(tenants.clone()),
+            _ => None,
+        })
+        .map(adapters::teams::TeamsAdapter::new);
+    }
 }
 
 /// Parameter object for passing resolved Telegram config across the crate
@@ -405,6 +431,18 @@ pub struct GatewayGoogleChatConfig {
     pub sa_key_file: Option<String>,
     pub access_token: Option<String>,
     pub audience: Option<String>,
+    pub webhook_path: String,
+}
+
+/// Parameter object for passing resolved Teams config across the crate
+/// boundary without introducing a dependency on `openab-core` (#1380).
+#[derive(Debug, Clone)]
+pub struct GatewayTeamsConfig {
+    pub app_id: Option<String>,
+    pub app_secret: Option<String>,
+    pub allowed_tenants: Vec<String>,
+    pub oauth_endpoint: String,
+    pub openid_metadata: String,
     pub webhook_path: String,
 }
 
@@ -498,12 +536,12 @@ pub async fn serve(config: ServeConfig) -> anyhow::Result<()> {
     #[cfg(not(feature = "teams"))]
     let teams: Option<()> = None;
 
+    let teams_webhook_path =
+        std::env::var("TEAMS_WEBHOOK_PATH").unwrap_or_else(|_| "/webhook/teams".into());
     #[cfg(feature = "teams")]
     if teams.is_some() {
-        let webhook_path =
-            std::env::var("TEAMS_WEBHOOK_PATH").unwrap_or_else(|_| "/webhook/teams".into());
-        info!(path = %webhook_path, "teams webhook registered");
-        app = app.route(&webhook_path, post(adapters::teams::webhook));
+        info!(path = %teams_webhook_path, "teams webhook registered");
+        app = app.route(&teams_webhook_path, post(adapters::teams::webhook));
     }
 
     // Feishu adapter
@@ -617,6 +655,7 @@ pub async fn serve(config: ServeConfig) -> anyhow::Result<()> {
         line_webhook_path,
         #[cfg(feature = "teams")]
         teams,
+        teams_webhook_path,
         teams_service_urls: Mutex::new(HashMap::new()),
         #[cfg(feature = "feishu")]
         feishu,
@@ -928,6 +967,35 @@ mod l1_audit_tests {
         // channel secret present → L1 enforced
         s.line_channel_secret = Some("csecret".into());
         assert!(flagged(&s).is_empty());
+    }
+
+    #[cfg(feature = "teams")]
+    #[test]
+    fn apply_teams_config_requires_credentials() {
+        use super::GatewayTeamsConfig;
+        let mut s = state();
+        // Complete credentials → adapter built, path set.
+        s.apply_teams_config(GatewayTeamsConfig {
+            app_id: Some("app".into()),
+            app_secret: Some("sec".into()),
+            allowed_tenants: vec!["t1".into()],
+            oauth_endpoint: "https://x/token".into(),
+            openid_metadata: "https://x/oidc".into(),
+            webhook_path: "/hook/teams".into(),
+        });
+        assert!(s.teams.is_some());
+        assert_eq!(s.teams_webhook_path, "/hook/teams");
+
+        // Missing secret → adapter disabled (same as env-only semantics).
+        s.apply_teams_config(GatewayTeamsConfig {
+            app_id: Some("app".into()),
+            app_secret: None,
+            allowed_tenants: vec![],
+            oauth_endpoint: "https://x/token".into(),
+            openid_metadata: "https://x/oidc".into(),
+            webhook_path: "/hook/teams".into(),
+        });
+        assert!(s.teams.is_none());
     }
 
     #[cfg(feature = "googlechat")]

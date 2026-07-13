@@ -534,7 +534,7 @@ async fn main() -> anyhow::Result<()> {
         platform_trust_override(
             &mut reg,
             "teams",
-            &cfg.teams,
+            &cfg.teams.as_ref().map(|t| t.trust_config()),
             "TEAMS",
             cfg!(feature = "teams") && std::env::var("TEAMS_APP_ID").is_ok(),
             allow_all_channels,
@@ -915,6 +915,21 @@ async fn main() -> anyhow::Result<()> {
                     webhook_path: r.webhook_path,
                 });
             }
+            // First-class `[teams]` config overrides env-derived values
+            // (config-authoritative + ${} expansion + TEAMS_* env fallback,
+            // #1380).
+            #[cfg(feature = "teams")]
+            if let Some(ref t) = cfg.teams {
+                let r = t.resolve();
+                gw_state_inner.apply_teams_config(openab_gateway::GatewayTeamsConfig {
+                    app_id: r.app_id,
+                    app_secret: r.app_secret,
+                    allowed_tenants: r.allowed_tenants,
+                    oauth_endpoint: r.oauth_endpoint,
+                    openid_metadata: r.openid_metadata,
+                    webhook_path: r.webhook_path,
+                });
+            }
             let gw_state = Arc::new(gw_state_inner);
 
             // Phase 1 L1 audit (#1356): warn if any active webhook platform has
@@ -986,11 +1001,9 @@ async fn main() -> anyhow::Result<()> {
 
             #[cfg(feature = "teams")]
             if gw_state.teams.is_some() {
-                let path =
-                    std::env::var("TEAMS_WEBHOOK_PATH").unwrap_or_else(|_| "/webhook/teams".into());
-                info!(path = %path, "unified: teams adapter enabled");
+                info!(path = %gw_state.teams_webhook_path, "unified: teams adapter enabled");
                 app = app.route(
-                    &path,
+                    &gw_state.teams_webhook_path,
                     axum::routing::post(openab_gateway::adapters::teams::webhook),
                 );
             }
